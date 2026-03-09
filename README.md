@@ -130,12 +130,19 @@ ton-repo/
 ### `requirements.txt`
 
 ```txt
-soda-core-postgres==3.3.3
-apache-airflow-providers-postgres==5.10.0
-apache-airflow-providers-http==4.10.0
-requests==2.31.0
-pandas==2.2.2
+# Providers Airflow (pas apache-airflow lui-même, géré par Astro)
+apache-airflow-providers-postgres
+apache-airflow-providers-http
+
+# Soda
+soda-core-postgres==3.5.6
+
+# Utils
+requests>=2.32.0
+psycopg2-binary==2.9.9
 python-dotenv==1.0.0
+pandas==2.2.2
+
 ```
 
 ### `.env` (copier depuis `.env.example`)
