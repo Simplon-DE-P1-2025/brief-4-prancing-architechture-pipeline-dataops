@@ -21,6 +21,7 @@ include/data/processed/*.csv
 include/data/quarantine/*.csv
 include/data/reports/*.csv
 include/data/reports/*.html
+include/data/reports/*.md
 
 # Local secrets
 include/soda/configuration.yml

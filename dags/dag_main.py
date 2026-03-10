@@ -21,6 +21,31 @@ from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG, BaseHook, TaskGroup, Variable
 from soda_core.contracts import verify_contract_locally
 
+DAG_DOC_MD = """
+# Chicago Crimes Pipeline
+
+Pipeline ETL unique organise en trois groupes:
+
+1. `ingestion`
+   Extraction API, validation Soda du brut, publication des jeux `valid` et `quarantine`.
+2. `transformation`
+   Nettoyage, agregations et validation Soda du dataset prepare.
+3. `loading`
+   Initialisation PostgreSQL puis chargement parallelise des donnees valides et en quarantaine.
+
+## Sorties locales
+
+- `include/data/raw/`
+- `include/data/processed/`
+- `include/data/quarantine/`
+- `include/data/reports/`
+
+## Regles qualite
+
+- Contrat raw: `include/soda/contracts/raw_contract.yml`
+- Contrat processed: `include/soda/contracts/processed_contract.yml`
+"""
+
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
@@ -188,6 +213,10 @@ def write_quality_reports(
     df_quarantine: pd.DataFrame,
 ):
     os.makedirs(REPORTS_DIR, exist_ok=True)
+    try:
+        os.chmod(REPORTS_DIR, 0o777)
+    except PermissionError:
+        print(f"Impossible de modifier les permissions de {REPORTS_DIR}")
 
     summary_rows = [
         {"report": report_name, "metric": "contract_path", "value": contract_path},
@@ -218,9 +247,34 @@ def write_quality_reports(
 
     summary_csv_path = f"{REPORTS_DIR}/{report_name}_summary.csv"
     reasons_csv_path = f"{REPORTS_DIR}/{report_name}_reasons.csv"
+    markdown_path = f"{REPORTS_DIR}/{report_name}_report.md"
     summary_df.to_csv(summary_csv_path, index=False)
     reasons_df.to_csv(reasons_csv_path, index=False)
-    print(f"Rapports ecrits: {summary_csv_path}, {reasons_csv_path}")
+
+    markdown_lines = [
+        f"# {report_name}",
+        "",
+        f"- contract_path: `{contract_path}`",
+        f"- contract_passed: `{contract_passed}`",
+        f"- total_rows: `{total_rows}`",
+        f"- valid_rows: `{valid_rows}`",
+        f"- quarantine_rows: `{quarantine_rows}`",
+        "",
+        "## Top quarantine reasons",
+        "",
+    ]
+    if reasons_df.empty:
+        markdown_lines.append("No quarantine reasons.")
+    else:
+        markdown_lines.append("| quarantine_reason | row_count |")
+        markdown_lines.append("|---|---:|")
+        for row in reasons_df.itertuples(index=False):
+            markdown_lines.append(f"| {row.quarantine_reason} | {row.row_count} |")
+
+    with open(markdown_path, "w", encoding="utf-8") as markdown_file:
+        markdown_file.write("\n".join(markdown_lines) + "\n")
+
+    print(f"Rapports ecrits: {summary_csv_path}, {reasons_csv_path}, {markdown_path}")
 
 
 def coerce_dataframe_for_contract(df: pd.DataFrame, contract_path: str) -> pd.DataFrame:
@@ -522,65 +576,92 @@ with DAG(
     start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
     catchup=False,
     template_searchpath=["/usr/local/airflow/include"],
+    doc_md=DAG_DOC_MD,
     tags=["main", "chicago", "pipeline"],
 ) as dag:
     with TaskGroup("ingestion", tooltip="Extraction et controle qualite brut") as ingestion:
-        task_fetch_save = PythonOperator(
-            task_id="fetch_and_save_csv",
-            python_callable=fetch_and_save_csv,
-        )
-        task_create_db = PythonOperator(
-            task_id="create_database_if_not_exists",
-            python_callable=create_database_if_not_exists,
-        )
-        task_validate_raw = PythonOperator(
-            task_id="validate_raw",
-            python_callable=validate_raw,
-        )
-        task_valid_raw = PythonOperator(
-            task_id="valid_raw",
-            python_callable=materialize_valid_raw,
-        )
-        task_quarantine_raw = PythonOperator(
-            task_id="quarantine_raw",
-            python_callable=materialize_quarantine_raw,
-        )
+        with TaskGroup("extract", tooltip="Extraction API et preparation de la base"):
+            task_fetch_save = PythonOperator(
+                task_id="fetch_api_raw",
+                python_callable=fetch_and_save_csv,
+                doc_md="Recupere les crimes depuis l'API Chicago et ecrit le CSV brut extrait.",
+            )
+            task_create_db = PythonOperator(
+                task_id="ensure_postgres_database",
+                python_callable=create_database_if_not_exists,
+                doc_md="Cree la base PostgreSQL `chicago_crimes` si elle n'existe pas encore.",
+            )
+
+        with TaskGroup("quality", tooltip="Validation Soda du brut et publication des rapports"):
+            task_validate_raw = PythonOperator(
+                task_id="validate_raw_contract",
+                python_callable=validate_raw,
+                doc_md="Execute le contrat Soda raw sur le brut extrait et produit les rapports CSV et Markdown.",
+            )
+
+        with TaskGroup("outputs", tooltip="Separation du brut valide et de la quarantaine"):
+            task_valid_raw = PythonOperator(
+                task_id="publish_valid_raw",
+                python_callable=materialize_valid_raw,
+                doc_md="Materilise le sous-ensemble brut valide qui sera utilise par la transformation.",
+            )
+            task_quarantine_raw = PythonOperator(
+                task_id="publish_quarantine_raw",
+                python_callable=materialize_quarantine_raw,
+                doc_md="Materilise les lignes brutes en echec dans un CSV et une table de quarantaine.",
+            )
+
         task_fetch_save >> task_create_db >> task_validate_raw
         task_validate_raw >> [task_valid_raw, task_quarantine_raw]
 
     with TaskGroup("transformation", tooltip="Preparation et qualite des donnees") as transformation:
-        task_filter = PythonOperator(
-            task_id="transform_filter",
-            python_callable=transform_filter,
-        )
-        task_agg = PythonOperator(
-            task_id="transform_agg",
-            python_callable=transform_agg,
-        )
-        task_merge = PythonOperator(
-            task_id="merge_and_finalize",
-            python_callable=merge_and_finalize,
-        )
-        task_validate_processed = PythonOperator(
-            task_id="validate_processed",
-            python_callable=validate_processed,
-        )
+        with TaskGroup("prepare", tooltip="Nettoyage et enrichissement du dataset"):
+            task_filter = PythonOperator(
+                task_id="clean_valid_raw",
+                python_callable=transform_filter,
+                doc_md="Nettoie le brut valide, caste les types et supprime les doublons restants sur `id`.",
+            )
+            task_agg = PythonOperator(
+                task_id="aggregate_valid_raw",
+                python_callable=transform_agg,
+                doc_md="Construit un dataset agrege par type de crime et district.",
+            )
+            task_merge = PythonOperator(
+                task_id="finalize_clean_dataset",
+                python_callable=merge_and_finalize,
+                doc_md="Prepare le dataset final propre a partir du CSV filtre.",
+            )
+
+        with TaskGroup("quality", tooltip="Validation Soda du dataset prepare"):
+            task_validate_processed = PythonOperator(
+                task_id="validate_processed_contract",
+                python_callable=validate_processed,
+                doc_md="Execute le contrat Soda processed sur le dataset final avant chargement et produit les rapports CSV et Markdown.",
+            )
+
         [task_filter, task_agg] >> task_merge >> task_validate_processed
 
     with TaskGroup("loading", tooltip="Initialisation base et chargement") as loading:
-        task_create_tables = SQLExecuteQueryOperator(
-            task_id="create_tables_if_not_exists",
-            conn_id=CONN_ID,
-            sql="sql/init_tables.sql",
-        )
-        task_load_valid = PythonOperator(
-            task_id="load_valid_data",
-            python_callable=load_valid_data,
-        )
-        task_load_quarantine = PythonOperator(
-            task_id="load_quarantine_data",
-            python_callable=load_quarantine_data,
-        )
+        with TaskGroup("init", tooltip="Preparation des tables PostgreSQL"):
+            task_create_tables = SQLExecuteQueryOperator(
+                task_id="create_target_tables",
+                conn_id=CONN_ID,
+                sql="sql/init_tables.sql",
+                doc_md="Cree les tables PostgreSQL necessaires a partir du script SQL du projet.",
+            )
+
+        with TaskGroup("publish", tooltip="Chargement final parallelise"):
+            task_load_valid = PythonOperator(
+                task_id="load_valid_records",
+                python_callable=load_valid_data,
+                doc_md="Charge les lignes valides dans la table finale `chicago_crimes`.",
+            )
+            task_load_quarantine = PythonOperator(
+                task_id="load_quarantine_records",
+                python_callable=load_quarantine_data,
+                doc_md="Charge les lignes hors bornes GPS dans la table de quarantaine finale.",
+            )
+
         task_create_tables >> [task_load_valid, task_load_quarantine]
 
     task_valid_raw >> [task_filter, task_agg]

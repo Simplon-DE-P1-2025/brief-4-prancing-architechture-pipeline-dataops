@@ -36,15 +36,25 @@ Il contient trois `TaskGroup`:
 - `transformation`
 - `loading`
 
+Chaque groupe est decoupe en sous-groupes legers pour une lecture plus claire dans l'UI Airflow:
+- `ingestion.extract`
+- `ingestion.quality`
+- `ingestion.outputs`
+- `transformation.prepare`
+- `transformation.quality`
+- `loading.init`
+- `loading.publish`
+
 Flux principal:
-1. `fetch_and_save_csv`
-2. `validate_raw` avec contrat Soda
-3. `valid_raw` et `quarantine_raw`
-4. `transform_filter` et `transform_agg` en parallele
-5. `merge_and_finalize`
-6. `validate_processed` avec contrat Soda
-7. `create_tables_if_not_exists`
-8. `load_valid_data` et `load_quarantine_data` en parallele
+1. `fetch_api_raw`
+2. `ensure_postgres_database`
+3. `validate_raw_contract`
+4. `publish_valid_raw` et `publish_quarantine_raw`
+5. `clean_valid_raw` et `aggregate_valid_raw` en parallele
+6. `finalize_clean_dataset`
+7. `validate_processed_contract`
+8. `create_target_tables`
+9. `load_valid_records` et `load_quarantine_records` en parallele
 
 ## Contrats Soda
 
@@ -58,11 +68,11 @@ Contrats:
 `validate_raw`:
 - execute le contrat Soda sur le brut extrait
 - produit ensuite un fichier valide et un fichier de quarantaine
-- ecrit des rapports CSV dans `include/data/reports/`
+- ecrit des rapports CSV et Markdown dans `include/data/reports/`
 
 `validate_processed`:
 - execute le contrat Soda sur le dataset propre
-- ecrit aussi des rapports CSV dans `include/data/reports/`
+- ecrit aussi des rapports CSV et Markdown dans `include/data/reports/`
 - bloque le chargement final si le contrat echoue
 
 ## Fichiers generes
@@ -72,6 +82,7 @@ Le pipeline genere localement:
 - `include/data/processed/*.csv`
 - `include/data/quarantine/*.csv`
 - `include/data/reports/*.csv`
+- `include/data/reports/*.md`
 
 Ces fichiers sont ignores par Git.
 
