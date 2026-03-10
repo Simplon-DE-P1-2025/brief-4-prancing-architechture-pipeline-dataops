@@ -8,6 +8,19 @@ Pipeline Airflow lance via Astro CLI pour ingerer des crimes de Chicago, control
 .
 ├── dags/
 │   └── dag_main.py
+├── pages/
+│   ├── 1_Overview.py
+│   ├── 2_Soda_Reports.py
+│   ├── 3_Database_Explorer.py
+│   ├── 4_Quarantine_Explorer.py
+│   └── 5_History.py
+├── streamlit_app.py
+├── streamlit_dashboard/
+│   ├── config.py
+│   ├── services/
+│   │   ├── postgres.py
+│   │   └── reports.py
+│   └── ui.py
 ├── include/
 │   ├── data/
 │   │   ├── raw/
@@ -22,9 +35,12 @@ Pipeline Airflow lance via Astro CLI pour ingerer des crimes de Chicago, control
 │   └── sql/
 │       └── init_tables.sql
 ├── airflow_settings.yaml
+├── docker-compose.streamlit.yml
 ├── Dockerfile
+├── Dockerfile.streamlit
 ├── packages.txt
-└── requirements.txt
+├── requirements.txt
+└── requirements-streamlit.txt
 ```
 
 ## DAG
@@ -156,6 +172,101 @@ Le projet utilise notamment:
 - `soda-postgres`
 - `psycopg2-binary`
 - `pandas`
+
+`requirements.txt` est reserve au runtime Astro/Airflow.
+
+L'application Streamlit utilise un fichier separe:
+- `requirements-streamlit.txt`
+
+## App Streamlit
+
+Une application locale [streamlit_app.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/streamlit_app.py) permet de consulter:
+- les rapports Soda `raw` et `processed`
+- les raisons de quarantaine
+- la volumetrie des tables PostgreSQL
+- un apercu des tables chargees en base
+
+L'application est maintenant structuree en mode multipage:
+- `streamlit_app.py`: page d'accueil et vue globale
+- `pages/1_Overview.py`: KPIs et volumetrie
+- `pages/2_Soda_Reports.py`: detail des rapports raw et processed
+- `pages/3_Database_Explorer.py`: exploration du schema `public`
+- `pages/4_Quarantine_Explorer.py`: focus sur les tables et raisons de quarantaine
+- `pages/5_History.py`: tendances si un historique de snapshots est disponible
+
+Le code Streamlit est separe en modules:
+- `streamlit_dashboard/config.py`: chemins et configuration DB
+- `streamlit_dashboard/services/reports.py`: lecture des rapports Soda
+- `streamlit_dashboard/services/postgres.py`: acces PostgreSQL
+- `streamlit_dashboard/ui.py`: composants visuels et sidebar
+
+Ameliorations UX principales:
+- bandeau de sante du pipeline
+- cartes KPI plus lisibles
+- vue de perte de volume entre raw, processed et load
+- filtres de quarantaine par raison et recherche texte
+- bouton de rafraichissement dans la sidebar
+- support d'un historique optionnel via `include/data/reports/history/*_history.csv`
+
+Lancement local:
+
+```bash
+python3 -m venv .venv-streamlit
+source .venv-streamlit/bin/activate
+python -m pip install -r requirements-streamlit.txt
+streamlit run streamlit_app.py
+```
+
+L'application lit:
+- les rapports sous `include/data/reports/`
+- la connexion PostgreSQL depuis `include/soda/configuration.yml`
+
+Par defaut, Streamlit est disponible sur `http://localhost:8501`.
+
+Important:
+- ne pas ajouter `streamlit` dans `requirements.txt`
+- sinon le build Astro peut casser a cause d'un conflit de dependances avec Airflow
+
+## App Streamlit avec Docker Compose
+
+Tu peux aussi lancer l'application avec Docker Compose, separement d'Astro:
+
+```bash
+docker compose -f docker-compose.streamlit.yml up --build
+```
+
+Commande pratique avec auto-detection du reseau Astro:
+
+```bash
+export ASTRO_AIRFLOW_NETWORK="$(docker inspect brief-4-prancing-architechture-pipeline-dataops_74776b-postgres-1 --format '{{range $k, $_ := .NetworkSettings.Networks}}{{$k}}{{end}}')"
+docker compose -f docker-compose.streamlit.yml up --build
+```
+
+Fichiers utilises:
+- [docker-compose.streamlit.yml](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/docker-compose.streamlit.yml)
+- [Dockerfile.streamlit](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/Dockerfile.streamlit)
+
+Configuration par defaut du service Streamlit:
+- port local: `8501`
+- hot reload via montage du repo dans `/app`
+- connexion PostgreSQL via variables d'environnement `STREAMLIT_DB_*`
+
+Par defaut, le compose utilise:
+- `STREAMLIT_DB_HOST=postgres`
+- `STREAMLIT_DB_PORT=5432`
+- `STREAMLIT_DB_USER=postgres`
+- `STREAMLIT_DB_PASSWORD=postgres`
+- `STREAMLIT_DB_NAME=chicago_crimes`
+
+Point d'attention:
+- le service Streamlit rejoint le reseau Docker Astro pour joindre directement le conteneur PostgreSQL
+- le reseau par defaut actuellement detecte est `brief-4-prancing-architechture-pipeline-dataops_74776b_airflow`
+- si ce nom change apres un nouveau bootstrap Astro, exporte la variable avant le lancement:
+
+```bash
+export ASTRO_AIRFLOW_NETWORK=brief-4-prancing-architechture-pipeline-dataops_74776b_airflow
+docker compose -f docker-compose.streamlit.yml up --build
+```
 
 ## Lancement
 
