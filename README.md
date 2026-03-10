@@ -190,7 +190,7 @@ Ouvre ton navigateur Windows : **http://localhost:8080**
 | Login    | `admin` |
 | Password | `admin` |
 
-Active le DAG `chicago_crimes_pipeline` et lance-le manuellement ✅
+Active le DAG `dag_main` et lance-le manuellement. Les DAGs secondaires sont `dag_1_ingestion`, `dag_2_transformation` et `dag_3_loading`.
 
 ---
 
@@ -247,3 +247,46 @@ exit
 ## 📄 Licence
 
 Voir [LICENSE](./LICENSE)
+
+```text
+ton-repo/
+│
+├── 📁 dags/
+│   ├── dag_main.py                          ← Orchestrateur (déclenche les 3 DAGs)
+│   ├── dag_1_ingestion.py                   ← DAG 1 : Fetch API → CSV → Soda check
+│   ├── dag_2_transformation.py              ← DAG 2 : Transformation → Soda check
+│   ├── dag_3_loading.py                     ← DAG 3 : Init DB → Load → Quarantaine
+│   └── __init__.py
+│
+├── 📁 include/
+│   │
+│   ├── 📁 soda/
+│   │   ├── configuration.yml                ← Connexions Soda (CSV + PostgreSQL)
+│   │   └── 📁 checks/
+│   │       ├── raw_checks.yml               ← Checks DAG 1 (données brutes)
+│   │       └── transformed_checks.yml       ← Checks DAG 2 (données transformées)
+│   │
+│   ├── 📁 sql/
+│   │   └── init_tables.sql                  ← CREATE TABLE IF NOT EXISTS
+│   │
+│   └── 📁 data/
+│       ├── 📁 raw/
+│       │   └── chicago_crimes_raw.csv       ← généré par DAG 1
+│       ├── 📁 processed/
+│       │   ├── chicago_crimes_filtered.csv  ← généré par DAG 2
+│       │   ├── chicago_crimes_aggregated.csv← généré par DAG 2
+│       │   └── chicago_crimes_clean.csv     ← généré par DAG 2
+│       └── 📁 quarantine/
+│           └── chicago_crimes_quarantine.csv← généré par DAG 3
+│
+├── 📁 plugins/                              ← vide (requis par Astro)
+├── 📁 tests/                                ← vide (requis par Astro)
+│
+├── Dockerfile                               ← généré par astro dev init
+├── requirements.txt                         ← dépendances Python
+├── packages.txt                             ← dépendances système
+├── .env                                     ← variables locales (non commité)
+├── .env.example                             ← template .env
+├── .gitignore
+└── README.md
+```

@@ -1,0 +1,37 @@
+checks for chicago_crimes_raw:
+
+  # ── Volume ────────────────────────────────────────────────────────────────
+  - row_count > 0:
+      name: "Le fichier ne doit pas être vide"
+  - row_count > 1000:
+      name: "Au moins 1000 crimes attendus"
+
+  # ── Doublons ──────────────────────────────────────────────────────────────
+  - duplicate_count(id) = 0:
+      name: "Pas de doublons sur id"
+  - duplicate_count(case_number) = 0:
+      name: "Pas de doublons sur case_number"
+
+  # ── Colonnes critiques non nulles ─────────────────────────────────────────
+  - missing_count(id) = 0:
+      name: "id ne doit pas être null"
+  - missing_count(case_number) = 0:
+      name: "case_number ne doit pas être null"
+  - missing_count(date) = 0:
+      name: "date ne doit pas être null"
+  - missing_count(primary_type) = 0:
+      name: "primary_type ne doit pas être null"
+
+  # ── Cohérence temporelle ──────────────────────────────────────────────────
+  - min(year) >= 2001:
+      name: "Année minimum = 2001 (début du dataset)"
+  - max(year) <= 2025:
+      name: "Année maximum = 2025"
+
+  # ── Valeurs valides ───────────────────────────────────────────────────────
+  - invalid_count(arrest) = 0:
+      name: "arrest doit être true ou false"
+      valid values: ["true", "false", "True", "False"]
+  - invalid_count(domestic) = 0:
+      name: "domestic doit être true ou false"
+      valid values: ["true", "false", "True", "False"]

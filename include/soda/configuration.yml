@@ -1,0 +1,20 @@
+data_sources:
+
+  chicago_crimes_raw:
+    type: dask
+    path: /usr/local/airflow/include/data/raw/chicago_crimes_raw.csv
+    sep: ","
+
+  chicago_crimes_processed:
+    type: dask
+    path: /usr/local/airflow/include/data/processed/chicago_crimes_clean.csv
+    sep: ","
+
+  chicago_crimes_postgres:
+    type: postgres
+    host: postgres
+    port: 5432
+    database: chicago_crimes
+    username: postgres
+    password: postgres
+    schema: public
