@@ -3,7 +3,11 @@ apache-airflow-providers-postgres
 apache-airflow-providers-http
 
 # Soda
-soda-core-postgres==3.5.6
+--extra-index-url https://pypi.cloud.soda.io/simple
+soda
+soda-postgres>4
+setuptools>=75.0.0
+
 
 # Utils
 requests>=2.32.0

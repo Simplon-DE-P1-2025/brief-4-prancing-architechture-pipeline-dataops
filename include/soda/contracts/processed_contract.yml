@@ -1,0 +1,51 @@
+dataset: chicago_crimes/chicago_crimes/public/chicago_crimes_processed_contract
+
+columns:
+  - name: id
+    checks:
+      - missing:
+      - duplicate:
+
+  - name: case_number
+    checks:
+      - missing:
+      - duplicate:
+
+  - name: date
+    checks:
+      - missing:
+
+  - name: primary_type
+    checks:
+      - missing:
+
+  - name: year
+    checks:
+      - missing:
+      - invalid:
+          valid_min: 2001
+
+  - name: arrest
+    checks:
+      - missing:
+
+  - name: domestic
+    checks:
+      - missing:
+
+  - name: latitude
+    checks:
+      - invalid:
+          valid_min: 41.6
+          valid_max: 42.1
+
+  - name: longitude
+    checks:
+      - invalid:
+          valid_min: -88.0
+          valid_max: -87.5
+
+checks:
+  - row_count:
+      threshold:
+        must_be_greater_than: 10000

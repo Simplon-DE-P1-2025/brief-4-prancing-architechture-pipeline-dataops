@@ -1,292 +1,114 @@
-# brief-4-prancing-architechture-pipeline-dataops
-# 🚔 Chicago Crimes Pipeline — Airflow + Soda + PostgreSQL
+# Chicago Crimes Pipeline
 
-Pipeline de données automatisé qui ingère les crimes de Chicago depuis une API publique, valide la qualité avec Soda, transforme les données et les charge dans PostgreSQL — orchestré avec Airflow via **Astro CLI**.
+Pipeline Airflow lance via Astro CLI pour ingerer des crimes de Chicago, controler la qualite avec Soda, transformer les donnees et les charger dans PostgreSQL.
 
----
+## Arborescence utile
 
-## 🏗️ Architecture du pipeline
-
-```
-API Chicago Crimes (JSON)
-        ↓
-[Task 1] fetch_data          → Ingestion des données brutes
-        ↓
-[Task 2] validate_raw        → Contrôle qualité Soda (données brutes)
-        ↓
-[Task 3] transform_data      → Filtrage, agrégation, restructuration
-        ↓
-[Task 4] validate_processed  → Contrôle qualité Soda (données transformées)
-        ↓
-[Task 5] load_to_postgres    → Chargement final dans PostgreSQL
-```
-
----
-
-## 📋 Prérequis
-
-- Windows 10/11 avec **WSL2** activé (Ubuntu)
-- **Docker Desktop** installé et configuré avec WSL2
-- **VSCode** avec l'extension **WSL** (Microsoft)
-- Git
-
----
-
-## 🐳 Étape 1 — Docker Desktop
-
-1. Télécharge et installe Docker Desktop : https://www.docker.com/products/docker-desktop
-
-2. Dans Docker Desktop :
-   - Ouvre **Settings → Resources → WSL Integration**
-   - Active ta distro **Ubuntu** ✅
-   - Clique **Apply & Restart**
-
-3. Vérifie dans ton terminal WSL :
-```bash
-docker --version
-docker compose version
-```
-
----
-
-## 🚀 Étape 2 — Installer Astro CLI
-
-Dans ton terminal **WSL (Ubuntu)** :
-
-```bash
-# Télécharger et installer Astro CLI
-curl -sSL install.astronomer.io | sudo bash
-
-# Vérifier l'installation
-astro version
-```
-
----
-
-## 📁 Étape 3 — Cloner et initialiser le projet
-
-```bash
-# Cloner le repo
-git clone https://github.com/ton-username/ton-repo.git
-cd ton-repo
-
-# Initialiser la structure Astro
-astro dev init
-```
-
-Astro génère automatiquement cette structure :
-
-```
-ton-repo/
-├── dags/               ← tes DAGs Airflow
-├── include/            ← fichiers additionnels (soda, data...)
-├── plugins/            ← plugins Airflow custom
-├── tests/              ← tests des DAGs
-├── Dockerfile          ← image Airflow custom
-├── packages.txt        ← dépendances système (apt)
-├── requirements.txt    ← dépendances Python
-└── .astro/
-    └── config.yaml
-```
-
----
-
-## 📂 Étape 4 — Créer la structure Soda
-
-```bash
-# Créer les dossiers nécessaires
-mkdir -p include/soda/checks
-mkdir -p include/data/{raw,processed}
-```
-
-Structure finale du projet :
-
-```
-ton-repo/
+```text
+.
 ├── dags/
-│   ├── chicago_crimes_dag.py       ← DAG principal
-│   └── utils/
-│       ├── api_client.py           ← Client API Chicago
-│       └── soda_runner.py          ← Wrapper Soda
+│   └── dag_main.py
 ├── include/
+│   ├── data/
+│   │   ├── raw/
+│   │   ├── processed/
+│   │   ├── quarantine/
+│   │   └── reports/
 │   ├── soda/
-│   │   ├── configuration.yml       ← Connexion PostgreSQL Soda
-│   │   └── checks/
-│   │       ├── raw_data_checks.yml
-│   │       └── transformed_checks.yml
-│   └── data/
-│       ├── raw/
-│       └── processed/
+│   │   ├── configuration.yml
+│   │   └── contracts/
+│   │       ├── raw_contract.yml
+│   │       └── processed_contract.yml
+│   └── sql/
+│       └── init_tables.sql
+├── airflow_settings.yaml
 ├── Dockerfile
-├── requirements.txt
 ├── packages.txt
-└── .env
+└── requirements.txt
 ```
 
----
+## DAG
 
-## 📦 Étape 5 — Configurer les dépendances
+Le projet expose un seul DAG: `dag_main`.
 
-### `requirements.txt`
+Il contient trois `TaskGroup`:
+- `ingestion`
+- `transformation`
+- `loading`
 
-```txt
-# Providers Airflow (pas apache-airflow lui-même, géré par Astro)
-apache-airflow-providers-postgres
-apache-airflow-providers-http
+Flux principal:
+1. `fetch_and_save_csv`
+2. `validate_raw` avec contrat Soda
+3. `valid_raw` et `quarantine_raw`
+4. `transform_filter` et `transform_agg` en parallele
+5. `merge_and_finalize`
+6. `validate_processed` avec contrat Soda
+7. `create_tables_if_not_exists`
+8. `load_valid_data` et `load_quarantine_data` en parallele
 
-# Soda
-soda-core-postgres==3.5.6
+## Contrats Soda
 
-# Utils
-requests>=2.32.0
-psycopg2-binary==2.9.9
-python-dotenv==1.0.0
-pandas==2.2.2
+Configuration source:
+- `include/soda/configuration.yml`
 
-```
+Contrats:
+- `include/soda/contracts/raw_contract.yml`
+- `include/soda/contracts/processed_contract.yml`
 
-### `.env` (copier depuis `.env.example`)
+`validate_raw`:
+- execute le contrat Soda sur le brut extrait
+- produit ensuite un fichier valide et un fichier de quarantaine
+- ecrit des rapports CSV dans `include/data/reports/`
 
-```bash
-cp .env.example .env
-```
+`validate_processed`:
+- execute le contrat Soda sur le dataset propre
+- ecrit aussi des rapports CSV dans `include/data/reports/`
+- bloque le chargement final si le contrat echoue
 
-Remplis les valeurs dans `.env` :
+## Fichiers generes
 
-```env
-# API Chicago Crimes
-API_URL=https://data.cityofchicago.org/resource/ijzp-q8t2.json
-API_LIMIT=20000
-SOCRATA_APP_TOKEN=        # optionnel, évite le rate limit
+Le pipeline genere localement:
+- `include/data/raw/*.csv`
+- `include/data/processed/*.csv`
+- `include/data/quarantine/*.csv`
+- `include/data/reports/*.csv`
 
-# PostgreSQL
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=chicago_crimes_db
-POSTGRES_USER=ton_user
-POSTGRES_PASSWORD=ton_password
-```
+Ces fichiers sont ignores par Git.
 
-> 💡 **Token Socrata gratuit** (recommandé) : https://data.cityofchicago.org/profile/app_tokens
+## Dependances
 
----
+Le projet utilise notamment:
+- `apache-airflow-providers-postgres`
+- `apache-airflow-providers-http`
+- `soda`
+- `soda-postgres`
+- `psycopg2-binary`
+- `pandas`
 
-## ▶️ Étape 6 — Lancer le projet
+## Lancement
 
 ```bash
 astro dev start
 ```
 
-> ⏳ Docker démarre automatiquement : webserver + scheduler + triggerer + PostgreSQL
+Puis ouvrir Airflow sur `http://localhost:8080` et lancer `dag_main`.
 
----
-
-## 🌐 Étape 7 — Accéder à l'interface Airflow
-
-Ouvre ton navigateur Windows : **http://localhost:8080**
-
-| Champ    | Valeur  |
-|----------|---------|
-| Login    | `admin` |
-| Password | `admin` |
-
-Active le DAG `dag_main` et lance-le manuellement. Les DAGs secondaires sont `dag_1_ingestion`, `dag_2_transformation` et `dag_3_loading`.
-
----
-
-## 🔌 Configurer la connexion PostgreSQL dans Airflow
-
-Dans l'UI Airflow → **Admin → Connections → +** :
-
-| Champ    | Valeur              |
-|----------|---------------------|
-| Conn Id  | `postgres_default`  |
-| Type     | `Postgres`          |
-| Host     | `postgres`          |
-| Schema   | `chicago_crimes_db` |
-| Login    | `ton_user`          |
-| Password | `ton_password`      |
-| Port     | `5432`              |
-
----
-
-## 🛑 Commandes Astro CLI
+Si tu modifies `requirements.txt` ou `Dockerfile`:
 
 ```bash
-astro dev start      # Démarrer tous les services
-astro dev stop       # Arrêter tous les services
-astro dev restart    # Redémarrer après modif Dockerfile/requirements
-astro dev logs       # Voir les logs en temps réel
-astro dev ps         # Voir les containers actifs
+astro dev stop
+astro dev start
 ```
 
----
+## Configuration locale
 
-## 🩺 Dépannage
+Le bootstrap local passe par `airflow_settings.yaml`.
 
-**Docker ne démarre pas dans WSL**
-```bash
-docker ps   # si erreur → relancer Docker Desktop sur Windows
-```
+Connexions attendues:
+- `chicago_crimes_api`
+- `postgres_default`
+- `postgres_root`
 
-**Port 8080 déjà utilisé**
-```bash
-astro dev start --port 8081
-```
-
-**Mot de passe Linux oublié**
-```powershell
-# PowerShell Windows (admin)
-wsl -u root
-passwd ton_username
-exit
-```
-
----
-
-## 📄 Licence
-
-Voir [LICENSE](./LICENSE)
-
-```text
-ton-repo/
-│
-├── 📁 dags/
-│   ├── dag_main.py                          ← Orchestrateur (déclenche les 3 DAGs)
-│   ├── dag_1_ingestion.py                   ← DAG 1 : Fetch API → CSV → Soda check
-│   ├── dag_2_transformation.py              ← DAG 2 : Transformation → Soda check
-│   ├── dag_3_loading.py                     ← DAG 3 : Init DB → Load → Quarantaine
-│   └── __init__.py
-│
-├── 📁 include/
-│   │
-│   ├── 📁 soda/
-│   │   ├── configuration.yml                ← Connexions Soda (CSV + PostgreSQL)
-│   │   └── 📁 checks/
-│   │       ├── raw_checks.yml               ← Checks DAG 1 (données brutes)
-│   │       └── transformed_checks.yml       ← Checks DAG 2 (données transformées)
-│   │
-│   ├── 📁 sql/
-│   │   └── init_tables.sql                  ← CREATE TABLE IF NOT EXISTS
-│   │
-│   └── 📁 data/
-│       ├── 📁 raw/
-│       │   └── chicago_crimes_raw.csv       ← généré par DAG 1
-│       ├── 📁 processed/
-│       │   ├── chicago_crimes_filtered.csv  ← généré par DAG 2
-│       │   ├── chicago_crimes_aggregated.csv← généré par DAG 2
-│       │   └── chicago_crimes_clean.csv     ← généré par DAG 2
-│       └── 📁 quarantine/
-│           └── chicago_crimes_quarantine.csv← généré par DAG 3
-│
-├── 📁 plugins/                              ← vide (requis par Astro)
-├── 📁 tests/                                ← vide (requis par Astro)
-│
-├── Dockerfile                               ← généré par astro dev init
-├── requirements.txt                         ← dépendances Python
-├── packages.txt                             ← dépendances système
-├── .env                                     ← variables locales (non commité)
-├── .env.example                             ← template .env
-├── .gitignore
-└── README.md
-```
+Variables attendues:
+- `CHICAGO_API_LIMIT`
+- `CHICAGO_API_ENDPOINT`

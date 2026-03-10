@@ -9,3 +9,18 @@ airflow-webserver.pid
 webserver_config.py
 airflow.cfg
 airflow.db
+data
+
+# Airflow / Python artifacts
+*.pyc
+dags/__pycache__/
+
+# Generated pipeline outputs
+include/data/raw/*.csv
+include/data/processed/*.csv
+include/data/quarantine/*.csv
+include/data/reports/*.csv
+include/data/reports/*.html
+
+# Local secrets
+include/soda/configuration.yml

@@ -8,7 +8,9 @@ Le DAG expose directement trois TaskGroups visibles dans l'UI Airflow:
 """
 from datetime import datetime, timedelta
 import csv
+import io
 import os
+import yaml
 
 import pandas as pd
 import pendulum
@@ -17,6 +19,7 @@ import requests
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG, BaseHook, TaskGroup, Variable
+from soda_core.contracts import verify_contract_locally
 
 default_args = {
     "owner": "airflow",
@@ -25,23 +28,260 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-RAW_CSV_PATH = "/usr/local/airflow/include/data/raw/chicago_crimes_raw.csv"
-FILTERED_CSV_PATH = "/usr/local/airflow/include/data/processed/chicago_crimes_filtered.csv"
-AGGREGATED_CSV_PATH = "/usr/local/airflow/include/data/processed/chicago_crimes_aggregated.csv"
-CLEAN_CSV_PATH = "/usr/local/airflow/include/data/processed/chicago_crimes_clean.csv"
-QUARANTINE_CSV_PATH = "/usr/local/airflow/include/data/quarantine/chicago_crimes_quarantine.csv"
+AIRFLOW_DATA_DIR = "/usr/local/airflow/include/data"
+RAW_EXTRACTED_CSV_PATH = f"{AIRFLOW_DATA_DIR}/raw/chicago_crimes_raw_extracted.csv"
+RAW_CSV_PATH = f"{AIRFLOW_DATA_DIR}/raw/chicago_crimes_raw.csv"
+FILTERED_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_filtered.csv"
+AGGREGATED_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_aggregated.csv"
+CLEAN_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_clean.csv"
+RAW_QUARANTINE_CSV_PATH = f"{AIRFLOW_DATA_DIR}/quarantine/chicago_crimes_raw_quarantine.csv"
+QUARANTINE_CSV_PATH = f"{AIRFLOW_DATA_DIR}/quarantine/chicago_crimes_quarantine.csv"
+REPORTS_DIR = f"{AIRFLOW_DATA_DIR}/reports"
 TARGET_DB = "chicago_crimes"
 CONN_ID = "postgres_default"
+SODA_CONFIG_PATH = "/usr/local/airflow/include/soda/configuration.yml"
+RAW_CONTRACT_PATH = "/usr/local/airflow/include/soda/contracts/raw_contract.yml"
+PROCESSED_CONTRACT_PATH = "/usr/local/airflow/include/soda/contracts/processed_contract.yml"
+RAW_CONTRACT_TABLE = "chicago_crimes_raw_contract"
+PROCESSED_CONTRACT_TABLE = "chicago_crimes_processed_contract"
+RAW_QUARANTINE_TABLE = "chicago_crimes_raw_quarantine"
+
+
+def get_postgres_connection():
+    conn_airflow = BaseHook.get_connection(CONN_ID)
+    return psycopg2.connect(
+        host=conn_airflow.host,
+        port=conn_airflow.port,
+        user=conn_airflow.login,
+        password=conn_airflow.password,
+        database=TARGET_DB,
+    )
+
+
+def get_postgres_column_type(series: pd.Series) -> str:
+    if pd.api.types.is_bool_dtype(series):
+        return "BOOLEAN"
+    if pd.api.types.is_integer_dtype(series):
+        return "BIGINT"
+    if pd.api.types.is_float_dtype(series):
+        return "DOUBLE PRECISION"
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "TIMESTAMP"
+    return "TEXT"
+
+
+def replace_table_from_dataframe(df: pd.DataFrame, table_name: str):
+    conn = get_postgres_connection()
+    conn.autocommit = False
+    cursor = conn.cursor()
+
+    columns_sql = ", ".join(
+        f'"{column}" {get_postgres_column_type(df[column])}' for column in df.columns
+    )
+    cursor.execute(f'DROP TABLE IF EXISTS public."{table_name}"')
+    cursor.execute(f'CREATE TABLE public."{table_name}" ({columns_sql})')
+
+    if not df.empty:
+        buffer = io.StringIO()
+        df.to_csv(buffer, index=False, header=False, na_rep="")
+        buffer.seek(0)
+        quoted_columns = ", ".join(f'"{column}"' for column in df.columns)
+        cursor.copy_expert(
+            f"""
+            COPY public."{table_name}" ({quoted_columns})
+            FROM STDIN WITH (FORMAT CSV)
+            """,
+            buffer,
+        )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def load_contract_definition(contract_path: str) -> dict:
+    with open(contract_path, encoding="utf-8") as contract_file:
+        return yaml.safe_load(contract_file)
+
+
+def append_reason(reason_map: pd.Series, mask: pd.Series, reason: str) -> pd.Series:
+    if not mask.any():
+        return reason_map
+    existing = reason_map.loc[mask].fillna("")
+    separator = existing.ne("").map({True: "|", False: ""})
+    reason_map.loc[mask] = existing + separator + reason
+    return reason_map
+
+
+def build_quarantine_from_contract(df: pd.DataFrame, contract_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    contract = load_contract_definition(contract_path)
+    quarantine_mask = pd.Series(False, index=df.index)
+    quarantine_reasons = pd.Series("", index=df.index, dtype="object")
+
+    for column_definition in contract.get("columns", []):
+        column_name = column_definition.get("name")
+        if not column_name or column_name not in df.columns:
+            continue
+
+        column_series = df[column_name]
+        checks = column_definition.get("checks", [])
+
+        for check in checks:
+            if not isinstance(check, dict) or len(check) != 1:
+                continue
+
+            check_name, check_config = next(iter(check.items()))
+
+            if check_name == "missing":
+                current_mask = column_series.isna() | (column_series.astype(str).str.strip() == "")
+                quarantine_mask |= current_mask
+                quarantine_reasons = append_reason(
+                    quarantine_reasons, current_mask, f"{column_name}_missing"
+                )
+
+            elif check_name == "duplicate":
+                non_missing_mask = ~(column_series.isna() | (column_series.astype(str).str.strip() == ""))
+                current_mask = column_series.duplicated(keep=False) & non_missing_mask
+                quarantine_mask |= current_mask
+                quarantine_reasons = append_reason(
+                    quarantine_reasons, current_mask, f"{column_name}_duplicate"
+                )
+
+            elif check_name == "invalid" and isinstance(check_config, dict):
+                current_mask = pd.Series(False, index=df.index)
+
+                valid_values = check_config.get("valid_values")
+                if valid_values is not None:
+                    non_missing_mask = ~(column_series.isna() | (column_series.astype(str).str.strip() == ""))
+                    current_mask |= non_missing_mask & ~column_series.isin(valid_values)
+
+                numeric_series = pd.to_numeric(column_series, errors="coerce")
+                valid_min = check_config.get("valid_min")
+                if valid_min is not None:
+                    current_mask |= numeric_series.notna() & (numeric_series < valid_min)
+
+                valid_max = check_config.get("valid_max")
+                if valid_max is not None:
+                    current_mask |= numeric_series.notna() & (numeric_series > valid_max)
+
+                quarantine_mask |= current_mask
+                quarantine_reasons = append_reason(
+                    quarantine_reasons, current_mask, f"{column_name}_invalid"
+                )
+
+    df_valid = df[~quarantine_mask].copy()
+    df_quarantine = df[quarantine_mask].copy()
+
+    if not df_quarantine.empty:
+        df_quarantine["quarantine_reason"] = quarantine_reasons.loc[df_quarantine.index]
+
+    return df_valid, df_quarantine
+
+
+def write_quality_reports(
+    report_name: str,
+    contract_path: str,
+    total_rows: int,
+    valid_rows: int,
+    quarantine_rows: int,
+    contract_passed: bool,
+    df_quarantine: pd.DataFrame,
+):
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+
+    summary_rows = [
+        {"report": report_name, "metric": "contract_path", "value": contract_path},
+        {"report": report_name, "metric": "contract_passed", "value": contract_passed},
+        {"report": report_name, "metric": "total_rows", "value": total_rows},
+        {"report": report_name, "metric": "valid_rows", "value": valid_rows},
+        {"report": report_name, "metric": "quarantine_rows", "value": quarantine_rows},
+        {
+            "report": report_name,
+            "metric": "valid_ratio",
+            "value": round((valid_rows / total_rows), 4) if total_rows else 0,
+        },
+    ]
+
+    summary_df = pd.DataFrame(summary_rows)
+    reasons_df = pd.DataFrame(columns=["quarantine_reason", "row_count"])
+    if "quarantine_reason" in df_quarantine.columns and not df_quarantine.empty:
+        reasons_df = (
+            df_quarantine["quarantine_reason"]
+            .fillna("")
+            .str.split("|", regex=False)
+            .explode()
+            .loc[lambda series: series.ne("")]
+            .value_counts()
+            .rename_axis("quarantine_reason")
+            .reset_index(name="row_count")
+        )
+
+    summary_csv_path = f"{REPORTS_DIR}/{report_name}_summary.csv"
+    reasons_csv_path = f"{REPORTS_DIR}/{report_name}_reasons.csv"
+    summary_df.to_csv(summary_csv_path, index=False)
+    reasons_df.to_csv(reasons_csv_path, index=False)
+    print(f"Rapports ecrits: {summary_csv_path}, {reasons_csv_path}")
+
+
+def coerce_dataframe_for_contract(df: pd.DataFrame, contract_path: str) -> pd.DataFrame:
+    contract = load_contract_definition(contract_path)
+    coerced_df = df.copy()
+
+    for column_definition in contract.get("columns", []):
+        column_name = column_definition.get("name")
+        if not column_name or column_name not in coerced_df.columns:
+            continue
+
+        checks = column_definition.get("checks", [])
+        for check in checks:
+            if not isinstance(check, dict) or len(check) != 1:
+                continue
+
+            check_name, check_config = next(iter(check.items()))
+            if check_name == "invalid" and isinstance(check_config, dict):
+                if "valid_min" in check_config or "valid_max" in check_config:
+                    coerced_df[column_name] = pd.to_numeric(
+                        coerced_df[column_name], errors="coerce"
+                    )
+
+    return coerced_df
+
+
+def verify_contract(contract_path: str, fail_on_error: bool = True) -> bool:
+    result = verify_contract_locally(
+        data_source_file_path=SODA_CONFIG_PATH,
+        contract_file_path=contract_path,
+        publish=False,
+    )
+
+    get_logs = getattr(result, "get_logs", None)
+    if callable(get_logs):
+        for log_line in get_logs():
+            print(log_line)
+
+    if getattr(result, "has_errors", False):
+        get_errors = getattr(result, "get_errors", None)
+        if callable(get_errors):
+            for error_line in get_errors():
+                print(error_line)
+        if fail_on_error:
+            raise Exception(f"Contrat Soda en erreur: {contract_path}")
+        return False
+
+    if not getattr(result, "is_passed", False):
+        if fail_on_error:
+            raise Exception(f"Contrat Soda echoue: {contract_path}")
+        return False
+
+    return True
 
 
 def fetch_and_save_csv(**context):
     http_conn = BaseHook.get_connection("chicago_crimes_api")
     base_url = f"{http_conn.schema}://{http_conn.host}"
 
-    api_limit = Variable.get("CHICAGO_API_LIMIT", default_var="20000")
-    endpoint = Variable.get(
-        "CHICAGO_API_ENDPOINT", default_var="/resource/ijzp-q8t2.json"
-    )
+    api_limit = Variable.get("CHICAGO_API_LIMIT", default="20000")
+    endpoint = Variable.get("CHICAGO_API_ENDPOINT", default="/resource/ijzp-q8t2.json")
 
     url = f"{base_url}{endpoint}"
     params = {
@@ -58,7 +298,7 @@ def fetch_and_save_csv(**context):
     if not data:
         raise ValueError("L'API a retourne 0 enregistrement")
 
-    os.makedirs(os.path.dirname(RAW_CSV_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(RAW_EXTRACTED_CSV_PATH), exist_ok=True)
 
     fieldnames = [
         "id",
@@ -84,7 +324,7 @@ def fetch_and_save_csv(**context):
         "longitude",
     ]
 
-    with open(RAW_CSV_PATH, mode="w", newline="", encoding="utf-8") as csvfile:
+    with open(RAW_EXTRACTED_CSV_PATH, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for record in data:
@@ -92,19 +332,43 @@ def fetch_and_save_csv(**context):
 
 
 def validate_raw(**context):
-    from soda.scan import Scan
+    df = pd.read_csv(RAW_EXTRACTED_CSV_PATH, dtype=str)
+    df_for_contract = coerce_dataframe_for_contract(df, RAW_CONTRACT_PATH)
+    replace_table_from_dataframe(df_for_contract, RAW_CONTRACT_TABLE)
+    contract_passed = verify_contract(RAW_CONTRACT_PATH, fail_on_error=False)
+    df_valid, df_quarantine = build_quarantine_from_contract(df, RAW_CONTRACT_PATH)
+    write_quality_reports(
+        report_name="raw_quality",
+        contract_path=RAW_CONTRACT_PATH,
+        total_rows=len(df),
+        valid_rows=len(df_valid),
+        quarantine_rows=len(df_quarantine),
+        contract_passed=contract_passed,
+        df_quarantine=df_quarantine,
+    )
+    print(
+        "Validation raw terminee: "
+        f"contrat_soda_ok={contract_passed}"
+    )
 
-    scan = Scan()
-    scan.set_scan_definition_name("chicago_crimes_raw")
-    scan.set_data_source_name("chicago_crimes_raw")
-    scan.add_configuration_yaml_file("/usr/local/airflow/include/soda/configuration.yml")
-    scan.add_sodacl_yaml_file("/usr/local/airflow/include/soda/checks/raw_checks.yml")
 
-    exit_code = scan.execute()
-    print(scan.get_logs_text())
+def materialize_valid_raw(**context):
+    df = pd.read_csv(RAW_EXTRACTED_CSV_PATH, dtype=str)
+    df_valid, _ = build_quarantine_from_contract(df, RAW_CONTRACT_PATH)
 
-    if exit_code != 0:
-        raise Exception("Soda check raw echoue")
+    os.makedirs(os.path.dirname(RAW_CSV_PATH), exist_ok=True)
+    df_valid.to_csv(RAW_CSV_PATH, index=False)
+    print(f"Valid raw materialise: {len(df_valid)} lignes")
+
+
+def materialize_quarantine_raw(**context):
+    df = pd.read_csv(RAW_EXTRACTED_CSV_PATH, dtype=str)
+    _, df_quarantine = build_quarantine_from_contract(df, RAW_CONTRACT_PATH)
+
+    os.makedirs(os.path.dirname(RAW_QUARANTINE_CSV_PATH), exist_ok=True)
+    df_quarantine.to_csv(RAW_QUARANTINE_CSV_PATH, index=False)
+    replace_table_from_dataframe(df_quarantine, RAW_QUARANTINE_TABLE)
+    print(f"Quarantine raw materialisee: {len(df_quarantine)} lignes")
 
 
 def transform_filter(**context):
@@ -169,21 +433,22 @@ def merge_and_finalize(**context):
 
 
 def validate_processed(**context):
-    from soda.scan import Scan
-
-    scan = Scan()
-    scan.set_scan_definition_name("chicago_crimes_processed")
-    scan.set_data_source_name("chicago_crimes_processed")
-    scan.add_configuration_yaml_file("/usr/local/airflow/include/soda/configuration.yml")
-    scan.add_sodacl_yaml_file(
-        "/usr/local/airflow/include/soda/checks/transformed_checks.yml"
+    df = pd.read_csv(CLEAN_CSV_PATH)
+    df_for_contract = coerce_dataframe_for_contract(df, PROCESSED_CONTRACT_PATH)
+    replace_table_from_dataframe(df_for_contract, PROCESSED_CONTRACT_TABLE)
+    contract_passed = verify_contract(PROCESSED_CONTRACT_PATH, fail_on_error=False)
+    df_valid, df_quarantine = build_quarantine_from_contract(df, PROCESSED_CONTRACT_PATH)
+    write_quality_reports(
+        report_name="processed_quality",
+        contract_path=PROCESSED_CONTRACT_PATH,
+        total_rows=len(df),
+        valid_rows=len(df_valid),
+        quarantine_rows=len(df_quarantine),
+        contract_passed=contract_passed,
+        df_quarantine=df_quarantine,
     )
-
-    exit_code = scan.execute()
-    print(scan.get_logs_text())
-
-    if exit_code != 0:
-        raise Exception("Soda check processed echoue")
+    if not contract_passed:
+        raise Exception(f"Contrat Soda echoue: {PROCESSED_CONTRACT_PATH}")
 
 
 def create_database_if_not_exists(**context):
@@ -212,14 +477,6 @@ def create_database_if_not_exists(**context):
 
 
 def load_valid_data(**context):
-    from sqlalchemy import create_engine
-
-    conn_airflow = BaseHook.get_connection(CONN_ID)
-    engine = create_engine(
-        f"postgresql://{conn_airflow.login}:{conn_airflow.password}"
-        f"@{conn_airflow.host}:{conn_airflow.port}/{TARGET_DB}"
-    )
-
     df = pd.read_csv(CLEAN_CSV_PATH)
     mask_valid = (
         df["latitude"].between(41.6, 42.1, inclusive="both") | df["latitude"].isna()
@@ -229,25 +486,10 @@ def load_valid_data(**context):
     )
 
     df_valid = df[mask_valid].copy()
-    df_valid.to_sql(
-        name="chicago_crimes",
-        con=engine,
-        schema="public",
-        if_exists="replace",
-        index=False,
-        chunksize=1000,
-    )
+    replace_table_from_dataframe(df_valid, "chicago_crimes")
 
 
 def load_quarantine_data(**context):
-    from sqlalchemy import create_engine
-
-    conn_airflow = BaseHook.get_connection(CONN_ID)
-    engine = create_engine(
-        f"postgresql://{conn_airflow.login}:{conn_airflow.password}"
-        f"@{conn_airflow.host}:{conn_airflow.port}/{TARGET_DB}"
-    )
-
     df = pd.read_csv(CLEAN_CSV_PATH)
     mask_invalid_lat = df["latitude"].notna() & ~df["latitude"].between(41.6, 42.1)
     mask_invalid_lon = df["longitude"].notna() & ~df["longitude"].between(-88.0, -87.5)
@@ -269,14 +511,7 @@ def load_quarantine_data(**context):
 
     os.makedirs(os.path.dirname(QUARANTINE_CSV_PATH), exist_ok=True)
     df_quarantine.to_csv(QUARANTINE_CSV_PATH, index=False)
-    df_quarantine.to_sql(
-        name="chicago_crimes_quarantine",
-        con=engine,
-        schema="public",
-        if_exists="replace",
-        index=False,
-        chunksize=1000,
-    )
+    replace_table_from_dataframe(df_quarantine, "chicago_crimes_quarantine")
 
 
 with DAG(
@@ -286,6 +521,7 @@ with DAG(
     schedule="@daily",
     start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
     catchup=False,
+    template_searchpath=["/usr/local/airflow/include"],
     tags=["main", "chicago", "pipeline"],
 ) as dag:
     with TaskGroup("ingestion", tooltip="Extraction et controle qualite brut") as ingestion:
@@ -293,11 +529,24 @@ with DAG(
             task_id="fetch_and_save_csv",
             python_callable=fetch_and_save_csv,
         )
+        task_create_db = PythonOperator(
+            task_id="create_database_if_not_exists",
+            python_callable=create_database_if_not_exists,
+        )
         task_validate_raw = PythonOperator(
             task_id="validate_raw",
             python_callable=validate_raw,
         )
-        task_fetch_save >> task_validate_raw
+        task_valid_raw = PythonOperator(
+            task_id="valid_raw",
+            python_callable=materialize_valid_raw,
+        )
+        task_quarantine_raw = PythonOperator(
+            task_id="quarantine_raw",
+            python_callable=materialize_quarantine_raw,
+        )
+        task_fetch_save >> task_create_db >> task_validate_raw
+        task_validate_raw >> [task_valid_raw, task_quarantine_raw]
 
     with TaskGroup("transformation", tooltip="Preparation et qualite des donnees") as transformation:
         task_filter = PythonOperator(
@@ -319,14 +568,10 @@ with DAG(
         [task_filter, task_agg] >> task_merge >> task_validate_processed
 
     with TaskGroup("loading", tooltip="Initialisation base et chargement") as loading:
-        task_create_db = PythonOperator(
-            task_id="create_database_if_not_exists",
-            python_callable=create_database_if_not_exists,
-        )
         task_create_tables = SQLExecuteQueryOperator(
             task_id="create_tables_if_not_exists",
             conn_id=CONN_ID,
-            sql="/usr/local/airflow/include/sql/init_tables.sql",
+            sql="sql/init_tables.sql",
         )
         task_load_valid = PythonOperator(
             task_id="load_valid_data",
@@ -336,6 +581,7 @@ with DAG(
             task_id="load_quarantine_data",
             python_callable=load_quarantine_data,
         )
-        task_create_db >> task_create_tables >> [task_load_valid, task_load_quarantine]
+        task_create_tables >> [task_load_valid, task_load_quarantine]
 
-    ingestion >> transformation >> loading
+    task_valid_raw >> [task_filter, task_agg]
+    transformation >> loading

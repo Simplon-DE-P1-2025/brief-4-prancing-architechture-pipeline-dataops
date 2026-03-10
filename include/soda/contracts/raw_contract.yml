@@ -1,0 +1,48 @@
+dataset: chicago_crimes/chicago_crimes/public/chicago_crimes_raw_contract
+
+columns:
+  - name: id
+    checks:
+      - missing:
+      - duplicate:
+
+  - name: case_number
+    checks:
+      - missing:
+      - duplicate:
+
+  - name: date
+    checks:
+      - missing:
+
+  - name: primary_type
+    checks:
+      - missing:
+
+  - name: year
+    checks:
+      - invalid:
+          valid_min: 2001
+
+  - name: arrest
+    checks:
+      - invalid:
+          valid_values:
+            - "true"
+            - "false"
+            - "True"
+            - "False"
+
+  - name: domestic
+    checks:
+      - invalid:
+          valid_values:
+            - "true"
+            - "false"
+            - "True"
+            - "False"
+
+checks:
+  - row_count:
+      threshold:
+        must_be_greater_than: 1000
