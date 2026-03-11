@@ -1,0 +1,41 @@
+# Contrôles qualité sur les données transformées (table chicago_crimes_clean)
+checks for chicago_crimes_clean:
+
+  # Table non vide après transformation
+  - row_count > 0
+
+  # Champs clés non nuls
+  - missing_count(crime_type) = 0:
+      name: "Type de crime ne doit pas être nul"
+  - missing_count(year) = 0:
+      name: "Année ne doit pas être nulle"
+  - missing_count(district) = 0:
+      name: "District ne doit pas être nul"
+
+  # Années cohérentes
+  - min(year) >= 2000:
+      name: "Année minimale cohérente"
+  - max(year) <= 2025:
+      name: "Année maximale cohérente"
+
+  # Pas de doublons
+  - duplicate_count(id) = 0:
+      name: "Pas de doublons après transformation"
+
+  # Heure valide (0-23)
+  - min(hour) >= 0:
+      name: "Heure minimale valide"
+  - max(hour) <= 23:
+      name: "Heure maximale valide"
+
+  # Coordonnées géographiques valides (bounding box de Chicago)
+  # Latitude  : entre 41.6 et 42.1  (Chicago s'étend sur ~55 km N/S)
+  # Longitude : entre -87.9 et -87.5 (Chicago s'étend sur ~25 km E/O)
+  - min(latitude) >= 41.6:
+      name: "Latitude minimale dans la zone Chicago"
+  - max(latitude) <= 42.1:
+      name: "Latitude maximale dans la zone Chicago"
+  - min(longitude) >= -87.9:
+      name: "Longitude minimale dans la zone Chicago"
+  - max(longitude) <= -87.5:
+      name: "Longitude maximale dans la zone Chicago"

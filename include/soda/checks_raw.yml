@@ -1,0 +1,22 @@
+# Contrôles qualité sur les données brutes (table chicago_crimes_raw)
+checks for chicago_crimes_raw:
+
+  # Vérification que la table n'est pas vide
+  - row_count > 0
+
+  # Champs obligatoires non nuls
+  - missing_count(id) = 0:
+      name: "ID ne doit pas être nul"
+  - missing_count(primary_type) = 0:
+      name: "Type de crime ne doit pas être nul"
+  - missing_count(date) = 0:
+      name: "Date ne doit pas être nulle"
+
+  # Unicité des identifiants
+  - duplicate_count(id) = 0:
+      name: "Les IDs doivent être uniques"
+
+  # Valeurs acceptables pour arrested
+  - invalid_count(arrest) = 0:
+      name: "Le champ arrest doit être booléen"
+      valid values: ['true', 'false', 'True', 'False']

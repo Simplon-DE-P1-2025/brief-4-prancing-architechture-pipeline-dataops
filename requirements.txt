@@ -2,7 +2,8 @@
 apache-airflow-providers-postgres
 apache-airflow-providers-http
 
-# Soda
+# Soda (setuptools requis pour distutils, supprimé en Python 3.12)
+setuptools
 soda-core-postgres==3.5.6
 
 # Utils

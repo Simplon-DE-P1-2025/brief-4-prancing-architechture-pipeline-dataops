@@ -1,0 +1,9 @@
+data_sources:
+  chicago_crimes_db:
+    type: postgres
+    host: host.docker.internal
+    port: 5432
+    username: postgres
+    password: postgres
+    database: postgres
+    schema: public
