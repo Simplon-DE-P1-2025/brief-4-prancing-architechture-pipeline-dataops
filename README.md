@@ -42,6 +42,53 @@ export ASTRO_AIRFLOW_NETWORK="$(docker inspect brief-4-prancing-architechture-pi
 docker compose -f docker-compose.streamlit.yml up --build
 ```
 
+## Appel API et configuration Airflow
+
+Le DAG `dag_main` recupere les donnees depuis l'API Socrata de Chicago via la connexion Airflow `chicago_crimes_api`.
+
+Parametres utilises:
+- connexion Airflow: `chicago_crimes_api`
+- endpoint par defaut: `/resource/ijzp-q8t2.json`
+- limite totale par defaut: `20000`
+- taille de page de pagination dans le code: `1000`
+
+Variables Airflow utilisees par `fetch_api_raw`:
+- `CHICAGO_API_LIMIT`: nombre total maximal de lignes a recuperer
+- `CHICAGO_API_ENDPOINT`: endpoint Socrata a appeler
+
+Exemple d'appel effectue par le DAG:
+
+```text
+https://data.cityofchicago.org/resource/ijzp-q8t2.json?$limit=1000&$offset=0&$order=id ASC
+```
+
+Changer la limite de collecte:
+1. Dans l'UI Airflow, aller dans `Admin > Variables`
+2. Modifier `CHICAGO_API_LIMIT`
+3. Relancer le DAG `dag_main`
+
+Changer l'endpoint:
+1. Dans l'UI Airflow, aller dans `Admin > Variables`
+2. Modifier `CHICAGO_API_ENDPOINT`
+3. Relancer le DAG `dag_main`
+
+Configuration locale par defaut dans [airflow_settings.yaml](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/airflow_settings.yaml):
+- `CHICAGO_API_LIMIT: 20000`
+- `CHICAGO_API_ENDPOINT: /resource/ijzp-q8t2.json`
+
+Si tu modifies [airflow_settings.yaml](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/airflow_settings.yaml), redemarre Astro pour reappliquer les variables et connexions:
+
+```bash
+astro dev stop
+astro dev start
+```
+
+Point important:
+- `CHICAGO_API_LIMIT` controle le volume total collecte
+- `PAGE_SIZE=1000` est fixe dans [dag_main.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/dag_main.py) et controle la pagination
+- pour changer `PAGE_SIZE`, il faut modifier le code puis redemarrer Airflow
+- si tu augmentes fortement la limite, le temps d'execution, les CSV generes et la volumetrie PostgreSQL augmenteront aussi
+
 ## Architecture fonctionnelle
 
 ```text
