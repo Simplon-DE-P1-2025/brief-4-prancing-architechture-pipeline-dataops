@@ -1,0 +1,23 @@
+services:
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: chicago-crimes-streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    environment:
+      STREAMLIT_DB_HOST: postgres
+      STREAMLIT_DB_PORT: "5432"
+      STREAMLIT_DB_USER: postgres
+      STREAMLIT_DB_PASSWORD: postgres
+      STREAMLIT_DB_NAME: chicago_crimes
+    networks:
+      - astro_airflow
+
+networks:
+  astro_airflow:
+    external: true
+    name: ${ASTRO_AIRFLOW_NETWORK:-brief-4-prancing-architechture-pipeline-dataops_74776b_airflow}
