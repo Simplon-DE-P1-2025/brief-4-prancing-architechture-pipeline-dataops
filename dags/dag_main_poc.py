@@ -1,5 +1,5 @@
 """
-DAG principal unifie du pipeline Chicago Crimes avec pagination API.
+DAG principal unifié du pipeline Chicago Crimes.
 
 Le DAG expose directement trois TaskGroups visibles dans l'UI Airflow:
   1. ingestion
@@ -22,16 +22,16 @@ from airflow.sdk import DAG, BaseHook, TaskGroup, Variable
 from soda_core.contracts import verify_contract_locally
 
 DAG_DOC_MD = """
-# Chicago Crimes Pipeline Multi API
+# Chicago Crimes Pipeline
 
 Pipeline ETL unique organise en trois groupes:
 
 1. `ingestion`
-   Extraction API paginee, validation Soda du brut, publication des jeux `valid` et `quarantine`.
+   Extraction API, validation Soda du brut, publication des jeux `valid` et `quarantine`.
 2. `transformation`
-   Nettoyage, agregations, validation Soda puis separation du dataset prepare.
+   Nettoyage, agregations et validation Soda du dataset prepare.
 3. `loading`
-   Preparation des tables PostgreSQL puis chargement final des jeux valid et quarantine.
+   Initialisation PostgreSQL puis chargement parallelise des donnees valides et en quarantaine.
 
 ## Sorties locales
 
@@ -44,16 +44,6 @@ Pipeline ETL unique organise en trois groupes:
 
 - Contrat raw: `include/soda/contracts/raw_contract.yml`
 - Contrat processed: `include/soda/contracts/processed_contract.yml`
-
-## Sequence processed
-
-1. `validate_processed_contract`
-2. `split_processed_outputs`
-3. `publish_valid_processed`
-4. `publish_quarantine_processed`
-5. `create_target_tables`
-6. `load_valid_records`
-7. `load_quarantine_records`
 """
 
 default_args = {
@@ -69,9 +59,7 @@ RAW_CSV_PATH = f"{AIRFLOW_DATA_DIR}/raw/chicago_crimes_raw.csv"
 FILTERED_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_filtered.csv"
 AGGREGATED_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_aggregated.csv"
 CLEAN_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_clean.csv"
-PROCESSED_VALID_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_valid.csv"
 RAW_QUARANTINE_CSV_PATH = f"{AIRFLOW_DATA_DIR}/quarantine/chicago_crimes_raw_quarantine.csv"
-PROCESSED_QUARANTINE_CSV_PATH = f"{AIRFLOW_DATA_DIR}/quarantine/chicago_crimes_processed_quarantine.csv"
 QUARANTINE_CSV_PATH = f"{AIRFLOW_DATA_DIR}/quarantine/chicago_crimes_quarantine.csv"
 REPORTS_DIR = f"{AIRFLOW_DATA_DIR}/reports"
 TARGET_DB = "chicago_crimes"
@@ -82,33 +70,6 @@ PROCESSED_CONTRACT_PATH = "/usr/local/airflow/include/soda/contracts/processed_c
 RAW_CONTRACT_TABLE = "chicago_crimes_raw_contract"
 PROCESSED_CONTRACT_TABLE = "chicago_crimes_processed_contract"
 RAW_QUARANTINE_TABLE = "chicago_crimes_raw_quarantine"
-PROCESSED_VALID_TABLE = "chicago_crimes_processed_valid"
-PROCESSED_QUARANTINE_TABLE = "chicago_crimes_processed_quarantine"
-PAGE_SIZE = 1000
-
-FIELDNAMES = [
-    "id",
-    "case_number",
-    "date",
-    "block",
-    "iucr",
-    "primary_type",
-    "description",
-    "location_description",
-    "arrest",
-    "domestic",
-    "beat",
-    "district",
-    "ward",
-    "community_area",
-    "fbi_code",
-    "x_coordinate",
-    "y_coordinate",
-    "year",
-    "updated_on",
-    "latitude",
-    "longitude",
-]
 
 
 def get_postgres_connection():
@@ -370,64 +331,58 @@ def verify_contract(contract_path: str, fail_on_error: bool = True) -> bool:
 
 
 def fetch_and_save_csv(**context):
-    """
-    Recupere les donnees de l'API Chicago Crimes avec pagination Socrata
-    et ecrit les pages directement dans le CSV local.
-    """
     http_conn = BaseHook.get_connection("chicago_crimes_api")
     base_url = f"{http_conn.schema}://{http_conn.host}"
-    api_limit = int(Variable.get("CHICAGO_API_LIMIT", default="20000"))
+
+    api_limit = Variable.get("CHICAGO_API_LIMIT", default="20000")
     endpoint = Variable.get("CHICAGO_API_ENDPOINT", default="/resource/ijzp-q8t2.json")
+
     url = f"{base_url}{endpoint}"
+    params = {
+        "$limit": api_limit,
+        "$order": "date DESC",
+    }
 
-    offset = 0
-    page = 1
-    total_rows = 0
+    print(f"Appel API : {url} avec limit={api_limit}")
+    response = requests.get(url, params=params, timeout=60)
+    response.raise_for_status()
+    data = response.json()
+    print(f"{len(data)} enregistrements recuperes")
 
-    print(f"Debut pagination - URL: {url}")
-    print(f"PAGE_SIZE={PAGE_SIZE} | LIMIT total={api_limit}")
+    if not data:
+        raise ValueError("L'API a retourne 0 enregistrement")
 
     os.makedirs(os.path.dirname(RAW_EXTRACTED_CSV_PATH), exist_ok=True)
+
+    fieldnames = [
+        "id",
+        "case_number",
+        "date",
+        "block",
+        "iucr",
+        "primary_type",
+        "description",
+        "location_description",
+        "arrest",
+        "domestic",
+        "beat",
+        "district",
+        "ward",
+        "community_area",
+        "fbi_code",
+        "x_coordinate",
+        "y_coordinate",
+        "year",
+        "updated_on",
+        "latitude",
+        "longitude",
+    ]
+
     with open(RAW_EXTRACTED_CSV_PATH, mode="w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=FIELDNAMES, extrasaction="ignore")
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-
-        with requests.Session() as session:
-            while offset < api_limit:
-                current_limit = min(PAGE_SIZE, api_limit - offset)
-                params = {
-                    "$limit": current_limit,
-                    "$offset": offset,
-                    "$order": "id ASC",
-                }
-
-                print(f"Page {page} - offset={offset} | limit={current_limit}")
-                response = session.get(url, params=params, timeout=60)
-                response.raise_for_status()
-                page_data = response.json()
-
-                if not page_data:
-                    print(f"Fin pagination - page vide a l'offset {offset}")
-                    break
-
-                for record in page_data:
-                    writer.writerow(record)
-
-                batch_size = len(page_data)
-                total_rows += batch_size
-                print(f"  {batch_size} enregistrements recus | Total cumule: {total_rows}")
-
-                if batch_size < current_limit:
-                    print("Fin pagination - derniere page atteinte")
-                    break
-
-                offset += batch_size
-                page += 1
-
-    if total_rows == 0:
-        raise ValueError("L'API a retourne 0 enregistrement - pipeline arrete")
-
-    print(f"Pagination terminee - {total_rows} enregistrements ecrits dans {RAW_EXTRACTED_CSV_PATH}")
+        for record in data:
+            writer.writerow(record)
 
 
 def validate_raw(**context):
@@ -445,7 +400,10 @@ def validate_raw(**context):
         contract_passed=contract_passed,
         df_quarantine=df_quarantine,
     )
-    print(f"Validation raw terminee: contrat_soda_ok={contract_passed}")
+    print(
+        "Validation raw terminee: "
+        f"contrat_soda_ok={contract_passed}"
+    )
 
 
 def materialize_valid_raw(**context):
@@ -543,37 +501,8 @@ def validate_processed(**context):
         contract_passed=contract_passed,
         df_quarantine=df_quarantine,
     )
-    print(f"Validation processed terminee: contrat_soda_ok={contract_passed}")
-
-
-def split_processed_outputs(**context):
-    df = pd.read_csv(CLEAN_CSV_PATH)
-    df_valid, df_quarantine = build_quarantine_from_contract(df, PROCESSED_CONTRACT_PATH)
-
-    os.makedirs(os.path.dirname(PROCESSED_VALID_CSV_PATH), exist_ok=True)
-    df_valid.to_csv(PROCESSED_VALID_CSV_PATH, index=False)
-
-    if not df_quarantine.empty:
-        df_quarantine["quarantined_at"] = datetime.now()
-
-    os.makedirs(os.path.dirname(PROCESSED_QUARANTINE_CSV_PATH), exist_ok=True)
-    df_quarantine.to_csv(PROCESSED_QUARANTINE_CSV_PATH, index=False)
-    print(
-        "Split processed termine: "
-        f"{len(df_valid)} lignes valides, {len(df_quarantine)} lignes en quarantaine"
-    )
-
-
-def materialize_valid_processed(**context):
-    df_valid = pd.read_csv(PROCESSED_VALID_CSV_PATH)
-    replace_table_from_dataframe(df_valid, PROCESSED_VALID_TABLE)
-    print(f"Processed valid materialise: {len(df_valid)} lignes")
-
-
-def materialize_quarantine_processed(**context):
-    df_quarantine = pd.read_csv(PROCESSED_QUARANTINE_CSV_PATH)
-    replace_table_from_dataframe(df_quarantine, PROCESSED_QUARANTINE_TABLE)
-    print(f"Processed quarantine materialisee: {len(df_quarantine)} lignes")
+    if not contract_passed:
+        raise Exception(f"Contrat Soda echoue: {PROCESSED_CONTRACT_PATH}")
 
 
 def create_database_if_not_exists(**context):
@@ -602,19 +531,45 @@ def create_database_if_not_exists(**context):
 
 
 def load_valid_data(**context):
-    df_valid = pd.read_csv(PROCESSED_VALID_CSV_PATH)
+    df = pd.read_csv(CLEAN_CSV_PATH)
+    mask_valid = (
+        df["latitude"].between(41.6, 42.1, inclusive="both") | df["latitude"].isna()
+    ) & (
+        df["longitude"].between(-88.0, -87.5, inclusive="both")
+        | df["longitude"].isna()
+    )
+
+    df_valid = df[mask_valid].copy()
     replace_table_from_dataframe(df_valid, "chicago_crimes")
 
 
 def load_quarantine_data(**context):
-    df_quarantine = pd.read_csv(PROCESSED_QUARANTINE_CSV_PATH)
+    df = pd.read_csv(CLEAN_CSV_PATH)
+    mask_invalid_lat = df["latitude"].notna() & ~df["latitude"].between(41.6, 42.1)
+    mask_invalid_lon = df["longitude"].notna() & ~df["longitude"].between(-88.0, -87.5)
+    mask_quarantine = mask_invalid_lat | mask_invalid_lon
+
+    df_quarantine = df[mask_quarantine].copy()
+    if df_quarantine.empty:
+        return
+
+    df_quarantine["quarantine_reason"] = ""
+    df_quarantine.loc[
+        mask_invalid_lat & mask_quarantine, "quarantine_reason"
+    ] += "latitude_hors_bornes "
+    df_quarantine.loc[
+        mask_invalid_lon & mask_quarantine, "quarantine_reason"
+    ] += "longitude_hors_bornes"
+    df_quarantine["quarantine_reason"] = df_quarantine["quarantine_reason"].str.strip()
+    df_quarantine["quarantined_at"] = datetime.now()
+
     os.makedirs(os.path.dirname(QUARANTINE_CSV_PATH), exist_ok=True)
     df_quarantine.to_csv(QUARANTINE_CSV_PATH, index=False)
     replace_table_from_dataframe(df_quarantine, "chicago_crimes_quarantine")
 
 
 with DAG(
-    dag_id="dag_main_multi_api",
+    dag_id="dag_main_poc",
     default_args=default_args,
     description="Pipeline Chicago Crimes avec TaskGroups visibles",
     schedule="@daily",
@@ -629,7 +584,7 @@ with DAG(
             task_fetch_save = PythonOperator(
                 task_id="fetch_api_raw",
                 python_callable=fetch_and_save_csv,
-                doc_md="Recupere les crimes depuis l'API Chicago avec pagination et ecrit le CSV brut extrait.",
+                doc_md="Recupere les crimes depuis l'API Chicago et ecrit le CSV brut extrait.",
             )
             task_create_db = PythonOperator(
                 task_id="ensure_postgres_database",
@@ -648,12 +603,12 @@ with DAG(
             task_valid_raw = PythonOperator(
                 task_id="publish_valid_raw",
                 python_callable=materialize_valid_raw,
-                doc_md="Materialise le sous-ensemble brut valide.",
+                doc_md="Materilise le sous-ensemble brut valide qui sera utilise par la transformation.",
             )
             task_quarantine_raw = PythonOperator(
                 task_id="publish_quarantine_raw",
                 python_callable=materialize_quarantine_raw,
-                doc_md="Materialise les lignes brutes en echec dans un CSV et une table de quarantaine.",
+                doc_md="Materilise les lignes brutes en echec dans un CSV et une table de quarantaine.",
             )
 
         task_fetch_save >> task_create_db >> task_validate_raw
@@ -664,7 +619,7 @@ with DAG(
             task_filter = PythonOperator(
                 task_id="clean_valid_raw",
                 python_callable=transform_filter,
-                doc_md="Nettoie le brut valide, caste les types et supprime les doublons.",
+                doc_md="Nettoie le brut valide, caste les types et supprime les doublons restants sur `id`.",
             )
             task_agg = PythonOperator(
                 task_id="aggregate_valid_raw",
@@ -681,52 +636,33 @@ with DAG(
             task_validate_processed = PythonOperator(
                 task_id="validate_processed_contract",
                 python_callable=validate_processed,
-                doc_md="Execute le contrat Soda processed sur le dataset final et produit les rapports de qualite. La suite du flux se base ensuite sur le split valid/quarantine.",
-            )
-
-        with TaskGroup("outputs", tooltip="Separation du dataset processed valide et de la quarantaine"):
-            task_split_processed = PythonOperator(
-                task_id="split_processed_outputs",
-                python_callable=split_processed_outputs,
-                doc_md="Construit une seule fois les jeux processed valides et en quarantaine a partir des regles du contrat Soda.",
-            )
-            task_valid_processed = PythonOperator(
-                task_id="publish_valid_processed",
-                python_callable=materialize_valid_processed,
-                doc_md="Publie le jeu processed valide dans la table intermediaire `chicago_crimes_processed_valid`.",
-            )
-            task_quarantine_processed = PythonOperator(
-                task_id="publish_quarantine_processed",
-                python_callable=materialize_quarantine_processed,
-                doc_md="Publie le jeu processed en quarantaine dans la table intermediaire `chicago_crimes_processed_quarantine`.",
+                doc_md="Execute le contrat Soda processed sur le dataset final avant chargement et produit les rapports CSV et Markdown.",
             )
 
         [task_filter, task_agg] >> task_merge >> task_validate_processed
-        task_validate_processed >> task_split_processed
-        task_split_processed >> [task_valid_processed, task_quarantine_processed]
 
-    with TaskGroup("loading", tooltip="Preparation SQL et chargement final") as loading:
-        with TaskGroup("init", tooltip="Preparation des tables cibles PostgreSQL"):
+    with TaskGroup("loading", tooltip="Initialisation base et chargement") as loading:
+        with TaskGroup("init", tooltip="Preparation des tables PostgreSQL"):
             task_create_tables = SQLExecuteQueryOperator(
                 task_id="create_target_tables",
                 conn_id=CONN_ID,
                 sql="sql/init_tables.sql",
-                doc_md="Cree ou reinitialise les tables cibles PostgreSQL a partir du script SQL du projet.",
+                doc_md="Cree les tables PostgreSQL necessaires a partir du script SQL du projet.",
             )
 
         with TaskGroup("publish", tooltip="Chargement final parallelise"):
             task_load_valid = PythonOperator(
                 task_id="load_valid_records",
                 python_callable=load_valid_data,
-                doc_md="Charge les lignes de `processed_valid` dans la table finale `chicago_crimes`.",
+                doc_md="Charge les lignes valides dans la table finale `chicago_crimes`.",
             )
             task_load_quarantine = PythonOperator(
                 task_id="load_quarantine_records",
                 python_callable=load_quarantine_data,
-                doc_md="Charge les lignes de `processed_quarantine` dans la table finale de quarantaine.",
+                doc_md="Charge les lignes hors bornes GPS dans la table de quarantaine finale.",
             )
 
         task_create_tables >> [task_load_valid, task_load_quarantine]
 
     task_valid_raw >> [task_filter, task_agg]
-    [task_valid_processed, task_quarantine_processed] >> task_create_tables
+    transformation >> loading

@@ -14,6 +14,10 @@ data
 # Airflow / Python artifacts
 *.pyc
 dags/__pycache__/
+pages/__pycache__/
+streamlit_dashboard/__pycache__/
+streamlit_dashboard/services/__pycache__/
+.venv-streamlit/
 
 # Generated pipeline outputs
 include/data/raw/*.csv
