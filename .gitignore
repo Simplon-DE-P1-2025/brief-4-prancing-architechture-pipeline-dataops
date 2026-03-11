@@ -15,6 +15,9 @@ data
 *.pyc
 dags/__pycache__/
 pages/__pycache__/
+streamlit_dashboard/__pycache__/
+streamlit_dashboard/services/__pycache__/
+.venv-streamlit/
 
 # Generated pipeline outputs
 include/data/raw/*.csv
@@ -26,4 +29,3 @@ include/data/reports/*.md
 
 # Local secrets
 include/soda/configuration.yml
-
