@@ -68,6 +68,11 @@ RAW_EXTRACTED_CSV_PATH = f"{AIRFLOW_DATA_DIR}/raw/chicago_crimes_raw_extracted.c
 RAW_CSV_PATH = f"{AIRFLOW_DATA_DIR}/raw/chicago_crimes_raw.csv"
 FILTERED_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_filtered.csv"
 AGGREGATED_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_aggregated.csv"
+AGG_HOURLY_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_agg_hourly.csv"
+AGG_MONTHLY_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_agg_monthly.csv"
+AGG_SERIOUS_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_agg_serious.csv"
+AGG_COMMUNITY_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_agg_community.csv"
+AGG_YEARLY_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_agg_yearly.csv"
 CLEAN_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_clean.csv"
 PROCESSED_VALID_CSV_PATH = f"{AIRFLOW_DATA_DIR}/processed/chicago_crimes_valid.csv"
 RAW_QUARANTINE_CSV_PATH = f"{AIRFLOW_DATA_DIR}/quarantine/chicago_crimes_raw_quarantine.csv"
@@ -522,6 +527,158 @@ def transform_agg(**context):
     agg.to_csv(AGGREGATED_CSV_PATH, index=False)
 
 
+def transform_agg_hourly(**context):
+    """Agregation par tranche horaire : nuit, matin, apres-midi, soir."""
+    df = pd.read_csv(RAW_CSV_PATH, dtype=str)
+
+    # Convertir la date et extraire l'heure
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df.dropna(subset=["date"], inplace=True)
+    df["hour"] = df["date"].dt.hour
+
+    # Classer chaque heure dans une tranche
+    def get_time_slot(hour):
+        if hour < 6:
+            return "nuit (0h-6h)"
+        elif hour < 12:
+            return "matin (6h-12h)"
+        elif hour < 18:
+            return "apres-midi (12h-18h)"
+        else:
+            return "soir (18h-0h)"
+
+    df["time_slot"] = df["hour"].apply(get_time_slot)
+
+    # Agreger par tranche horaire et type de crime
+    agg = (
+        df.groupby(["primary_type", "time_slot"])
+        .agg(total_crimes=("id", "count"))
+        .reset_index()
+    )
+
+    os.makedirs(os.path.dirname(AGG_HOURLY_CSV_PATH), exist_ok=True)
+    agg.to_csv(AGG_HOURLY_CSV_PATH, index=False)
+    print(f"Agregation horaire terminee: {len(agg)} lignes")
+
+
+def transform_agg_monthly(**context):
+    """Agregation mensuelle : saisonnalite des crimes."""
+    df = pd.read_csv(RAW_CSV_PATH, dtype=str)
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df.dropna(subset=["date"], inplace=True)
+    df["year"] = df["date"].dt.year
+    df["month"] = df["date"].dt.month
+
+    # Agreger par annee, mois et type de crime
+    agg = (
+        df.groupby(["primary_type", "year", "month"])
+        .agg(total_crimes=("id", "count"))
+        .reset_index()
+    )
+
+    os.makedirs(os.path.dirname(AGG_MONTHLY_CSV_PATH), exist_ok=True)
+    agg.to_csv(AGG_MONTHLY_CSV_PATH, index=False)
+    print(f"Agregation mensuelle terminee: {len(agg)} lignes")
+
+
+def transform_agg_serious(**context):
+    """Filtrage et agregation des crimes graves uniquement."""
+    df = pd.read_csv(RAW_CSV_PATH, dtype=str)
+
+    # Liste des types de crimes graves
+    serious_types = [
+        "HOMICIDE",
+        "ASSAULT",
+        "ROBBERY",
+        "WEAPONS VIOLATION",
+        "KIDNAPPING",
+        "CRIMINAL SEXUAL ASSAULT",
+    ]
+
+    # Garder uniquement les crimes graves
+    df = df[df["primary_type"].isin(serious_types)]
+
+    df["arrest"] = df["arrest"].map(
+        {"true": True, "false": False, "True": True, "False": False}
+    )
+    df["year"] = pd.to_numeric(df["year"], errors="coerce")
+
+    # Agreger par type de crime grave et district
+    agg = (
+        df.groupby(["primary_type", "district"])
+        .agg(
+            total_crimes=("id", "count"),
+            total_arrests=("arrest", "sum"),
+        )
+        .reset_index()
+    )
+
+    agg["arrest_rate"] = (agg["total_arrests"] / agg["total_crimes"] * 100).round(2)
+
+    os.makedirs(os.path.dirname(AGG_SERIOUS_CSV_PATH), exist_ok=True)
+    agg.to_csv(AGG_SERIOUS_CSV_PATH, index=False)
+    print(f"Agregation crimes graves terminee: {len(agg)} lignes")
+
+
+def transform_agg_community(**context):
+    """Agregation par quartier (community_area) avec taux d'arrestation."""
+    df = pd.read_csv(RAW_CSV_PATH, dtype=str)
+
+    df.dropna(subset=["community_area"], inplace=True)
+    df["arrest"] = df["arrest"].map(
+        {"true": True, "false": False, "True": True, "False": False}
+    )
+    df["domestic"] = df["domestic"].map(
+        {"true": True, "false": False, "True": True, "False": False}
+    )
+
+    # Agreger par quartier
+    agg = (
+        df.groupby(["community_area"])
+        .agg(
+            total_crimes=("id", "count"),
+            total_arrests=("arrest", "sum"),
+            total_domestic=("domestic", "sum"),
+        )
+        .reset_index()
+    )
+
+    agg["arrest_rate"] = (agg["total_arrests"] / agg["total_crimes"] * 100).round(2)
+    agg["domestic_rate"] = (agg["total_domestic"] / agg["total_crimes"] * 100).round(2)
+
+    os.makedirs(os.path.dirname(AGG_COMMUNITY_CSV_PATH), exist_ok=True)
+    agg.to_csv(AGG_COMMUNITY_CSV_PATH, index=False)
+    print(f"Agregation par quartier terminee: {len(agg)} lignes")
+
+
+def transform_agg_yearly(**context):
+    """Tendance annuelle : evolution du nombre de crimes par annee et type."""
+    df = pd.read_csv(RAW_CSV_PATH, dtype=str)
+
+    df["year"] = pd.to_numeric(df["year"], errors="coerce")
+    df.dropna(subset=["year"], inplace=True)
+    df["arrest"] = df["arrest"].map(
+        {"true": True, "false": False, "True": True, "False": False}
+    )
+
+    # Agreger par annee et type de crime
+    agg = (
+        df.groupby(["year", "primary_type"])
+        .agg(
+            total_crimes=("id", "count"),
+            total_arrests=("arrest", "sum"),
+        )
+        .reset_index()
+    )
+
+    agg["arrest_rate"] = (agg["total_arrests"] / agg["total_crimes"] * 100).round(2)
+
+    os.makedirs(os.path.dirname(AGG_YEARLY_CSV_PATH), exist_ok=True)
+    agg.to_csv(AGG_YEARLY_CSV_PATH, index=False)
+    print(f"Agregation annuelle terminee: {len(agg)} lignes")
+
+
 def merge_and_finalize(**context):
     df = pd.read_csv(FILTERED_CSV_PATH)
     os.makedirs(os.path.dirname(CLEAN_CSV_PATH), exist_ok=True)
@@ -613,6 +770,36 @@ def load_quarantine_data(**context):
     replace_table_from_dataframe(df_quarantine, "chicago_crimes_quarantine")
 
 
+def load_agg_hourly(**context):
+    df = pd.read_csv(AGG_HOURLY_CSV_PATH)
+    replace_table_from_dataframe(df, "chicago_crimes_agg_hourly")
+    print(f"Agregation horaire chargee: {len(df)} lignes")
+
+
+def load_agg_monthly(**context):
+    df = pd.read_csv(AGG_MONTHLY_CSV_PATH)
+    replace_table_from_dataframe(df, "chicago_crimes_agg_monthly")
+    print(f"Agregation mensuelle chargee: {len(df)} lignes")
+
+
+def load_agg_serious(**context):
+    df = pd.read_csv(AGG_SERIOUS_CSV_PATH)
+    replace_table_from_dataframe(df, "chicago_crimes_agg_serious")
+    print(f"Agregation crimes graves chargee: {len(df)} lignes")
+
+
+def load_agg_community(**context):
+    df = pd.read_csv(AGG_COMMUNITY_CSV_PATH)
+    replace_table_from_dataframe(df, "chicago_crimes_agg_community")
+    print(f"Agregation par quartier chargee: {len(df)} lignes")
+
+
+def load_agg_yearly(**context):
+    df = pd.read_csv(AGG_YEARLY_CSV_PATH)
+    replace_table_from_dataframe(df, "chicago_crimes_agg_yearly")
+    print(f"Agregation annuelle chargee: {len(df)} lignes")
+
+
 with DAG(
     dag_id="dag_main",
     default_args=default_args,
@@ -671,6 +858,31 @@ with DAG(
                 python_callable=transform_agg,
                 doc_md="Construit un dataset agrege par type de crime et district.",
             )
+            task_agg_hourly = PythonOperator(
+                task_id="aggregate_hourly",
+                python_callable=transform_agg_hourly,
+                doc_md="Agregation par tranche horaire (nuit, matin, apres-midi, soir).",
+            )
+            task_agg_monthly = PythonOperator(
+                task_id="aggregate_monthly",
+                python_callable=transform_agg_monthly,
+                doc_md="Agregation mensuelle pour analyser la saisonnalite.",
+            )
+            task_agg_serious = PythonOperator(
+                task_id="aggregate_serious_crimes",
+                python_callable=transform_agg_serious,
+                doc_md="Agregation des crimes graves (homicide, assault, robbery...).",
+            )
+            task_agg_community = PythonOperator(
+                task_id="aggregate_community",
+                python_callable=transform_agg_community,
+                doc_md="Agregation par quartier avec taux d'arrestation et violence domestique.",
+            )
+            task_agg_yearly = PythonOperator(
+                task_id="aggregate_yearly",
+                python_callable=transform_agg_yearly,
+                doc_md="Tendance annuelle du nombre de crimes par type.",
+            )
             task_merge = PythonOperator(
                 task_id="finalize_clean_dataset",
                 python_callable=merge_and_finalize,
@@ -701,7 +913,7 @@ with DAG(
                 doc_md="Publie le jeu processed en quarantaine dans la table intermediaire `chicago_crimes_processed_quarantine`.",
             )
 
-        [task_filter, task_agg] >> task_merge >> task_validate_processed
+        [task_filter, task_agg, task_agg_hourly, task_agg_monthly, task_agg_serious, task_agg_community, task_agg_yearly] >> task_merge >> task_validate_processed
         task_validate_processed >> task_split_processed
         task_split_processed >> [task_valid_processed, task_quarantine_processed]
 
@@ -725,8 +937,33 @@ with DAG(
                 python_callable=load_quarantine_data,
                 doc_md="Charge les lignes de `processed_quarantine` dans la table finale de quarantaine.",
             )
+            task_load_hourly = PythonOperator(
+                task_id="load_agg_hourly",
+                python_callable=load_agg_hourly,
+                doc_md="Charge l'agregation par tranche horaire.",
+            )
+            task_load_monthly = PythonOperator(
+                task_id="load_agg_monthly",
+                python_callable=load_agg_monthly,
+                doc_md="Charge l'agregation mensuelle.",
+            )
+            task_load_serious = PythonOperator(
+                task_id="load_agg_serious",
+                python_callable=load_agg_serious,
+                doc_md="Charge l'agregation des crimes graves.",
+            )
+            task_load_community = PythonOperator(
+                task_id="load_agg_community",
+                python_callable=load_agg_community,
+                doc_md="Charge l'agregation par quartier.",
+            )
+            task_load_yearly = PythonOperator(
+                task_id="load_agg_yearly",
+                python_callable=load_agg_yearly,
+                doc_md="Charge l'agregation annuelle.",
+            )
 
-        task_create_tables >> [task_load_valid, task_load_quarantine]
+        task_create_tables >> [task_load_valid, task_load_quarantine, task_load_hourly, task_load_monthly, task_load_serious, task_load_community, task_load_yearly]
 
     task_valid_raw >> [task_filter, task_agg]
     [task_valid_processed, task_quarantine_processed] >> task_create_tables
