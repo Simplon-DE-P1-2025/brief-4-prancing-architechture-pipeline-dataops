@@ -1,0 +1,16 @@
+# Providers Airflow (pas apache-airflow lui-même, géré par Astro)
+apache-airflow-providers-postgres
+apache-airflow-providers-http
+
+# Soda
+--extra-index-url https://pypi.cloud.soda.io/simple
+soda
+soda-postgres>4
+setuptools>=75.0.0
+
+
+# Utils
+requests>=2.32.0
+psycopg2-binary==2.9.9
+python-dotenv==1.0.0
+pandas==2.2.2
