@@ -5,7 +5,7 @@ import pandas as pd
 import yaml
 from soda_core.contracts import verify_contract_locally
 
-from dags.chicago_pipeline.constants import (
+from dags.chicago_pipeline.config import (
     CLEAN_CSV_PATH,
     PROCESSED_CONTRACT_PATH,
     PROCESSED_CONTRACT_TABLE,

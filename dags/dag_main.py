@@ -2,7 +2,7 @@
 DAG principal unifie du pipeline Chicago Crimes avec pagination API.
 
 Le DAG expose directement trois TaskGroups visibles dans l'UI Airflow:
-  1. ingestion
+  1. extract
   2. transformation
   3. loading
 """
@@ -12,7 +12,7 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG, TaskGroup
 
-from dags.chicago_pipeline.constants import CONN_ID, DAG_DOC_MD, DEFAULT_ARGS
+from dags.chicago_pipeline.config import CONN_ID, DAG_DOC_MD, DEFAULT_ARGS
 from dags.chicago_pipeline.database import create_database_if_not_exists
 from dags.chicago_pipeline.extraction import fetch_and_save_csv
 from dags.chicago_pipeline.loading import (
@@ -56,8 +56,8 @@ with DAG(
     doc_md=DAG_DOC_MD,
     tags=["main", "chicago", "pipeline"],
 ) as dag:
-    with TaskGroup("ingestion", tooltip="Extraction et controle qualite brut") as ingestion:
-        with TaskGroup("extract", tooltip="Extraction API et preparation de la base"):
+    with TaskGroup("extract", tooltip="Extraction et controle qualite brut") as extract_group:
+        with TaskGroup("source", tooltip="Extraction API et preparation de la base"):
             task_fetch_save = PythonOperator(
                 task_id="fetch_api_raw",
                 python_callable=fetch_and_save_csv,

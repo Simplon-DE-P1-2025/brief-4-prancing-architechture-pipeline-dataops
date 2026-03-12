@@ -1,0 +1,98 @@
+dag_doc_md: |
+  # Chicago Crimes Pipeline Multi API
+
+  Pipeline ETL unique organise en trois groupes:
+
+  1. `extract`
+     Extraction API paginee, validation Soda du brut, publication des jeux `valid` et `quarantine`.
+  2. `transformation`
+     Nettoyage, agregations, validation Soda puis separation du dataset prepare.
+  3. `loading`
+     Preparation des tables PostgreSQL puis chargement final des jeux valid et quarantine.
+
+  ## Sorties locales
+
+  - `include/data/raw/`
+  - `include/data/processed/`
+  - `include/data/quarantine/`
+  - `include/data/reports/`
+
+  ## Regles qualite
+
+  - Contrat raw: `include/soda/contracts/raw_contract.yml`
+  - Contrat processed: `include/soda/contracts/processed_contract.yml`
+
+  ## Sequence processed
+
+  1. `validate_processed_contract`
+  2. `split_processed_outputs`
+  3. `publish_valid_processed`
+  4. `publish_quarantine_processed`
+  5. `create_target_tables`
+  6. `load_valid_records`
+  7. `load_quarantine_records`
+
+default_args:
+  owner: airflow
+  depends_on_past: false
+  retries: 2
+  retry_delay_minutes: 5
+
+paths:
+  airflow_data_dir: /usr/local/airflow/include/data
+  raw_extracted_csv: raw/chicago_crimes_raw_extracted.csv
+  raw_csv: raw/chicago_crimes_raw.csv
+  filtered_csv: processed/chicago_crimes_filtered.csv
+  aggregated_csv: processed/chicago_crimes_aggregated.csv
+  agg_hourly_csv: processed/chicago_crimes_agg_hourly.csv
+  agg_monthly_csv: processed/chicago_crimes_agg_monthly.csv
+  agg_serious_csv: processed/chicago_crimes_agg_serious.csv
+  agg_community_csv: processed/chicago_crimes_agg_community.csv
+  agg_yearly_csv: processed/chicago_crimes_agg_yearly.csv
+  clean_csv: processed/chicago_crimes_clean.csv
+  processed_valid_csv: processed/chicago_crimes_valid.csv
+  raw_quarantine_csv: quarantine/chicago_crimes_raw_quarantine.csv
+  processed_quarantine_csv: quarantine/chicago_crimes_processed_quarantine.csv
+  quarantine_csv: quarantine/chicago_crimes_quarantine.csv
+  reports_dir: reports
+
+database:
+  target_db: chicago_crimes
+  conn_id: postgres_default
+
+soda:
+  config_path: /usr/local/airflow/include/soda/configuration.yml
+  raw_contract_path: /usr/local/airflow/include/soda/contracts/raw_contract.yml
+  processed_contract_path: /usr/local/airflow/include/soda/contracts/processed_contract.yml
+
+tables:
+  raw_contract: chicago_crimes_raw_contract
+  processed_contract: chicago_crimes_processed_contract
+  raw_quarantine: chicago_crimes_raw_quarantine
+  processed_valid: chicago_crimes_processed_valid
+  processed_quarantine: chicago_crimes_processed_quarantine
+
+api:
+  page_size: 1000
+  fieldnames:
+    - id
+    - case_number
+    - date
+    - block
+    - iucr
+    - primary_type
+    - description
+    - location_description
+    - arrest
+    - domestic
+    - beat
+    - district
+    - ward
+    - community_area
+    - fbi_code
+    - x_coordinate
+    - y_coordinate
+    - year
+    - updated_on
+    - latitude
+    - longitude

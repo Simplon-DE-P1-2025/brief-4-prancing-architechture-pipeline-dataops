@@ -4,7 +4,7 @@ import pandas as pd
 import psycopg2
 from airflow.sdk import BaseHook
 
-from dags.chicago_pipeline.constants import CONN_ID, TARGET_DB
+from dags.chicago_pipeline.config import CONN_ID, TARGET_DB
 
 
 def get_postgres_connection(database: str = TARGET_DB):

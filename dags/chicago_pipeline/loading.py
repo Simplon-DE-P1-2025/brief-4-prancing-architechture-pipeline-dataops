@@ -2,7 +2,7 @@ import os
 
 import pandas as pd
 
-from dags.chicago_pipeline.constants import (
+from dags.chicago_pipeline.config import (
     AGG_COMMUNITY_CSV_PATH,
     AGG_HOURLY_CSV_PATH,
     AGG_MONTHLY_CSV_PATH,

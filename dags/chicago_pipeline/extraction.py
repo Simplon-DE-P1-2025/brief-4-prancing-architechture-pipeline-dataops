@@ -4,7 +4,7 @@ import os
 import requests
 from airflow.sdk import BaseHook, Variable
 
-from dags.chicago_pipeline.constants import FIELDNAMES, PAGE_SIZE, RAW_EXTRACTED_CSV_PATH
+from dags.chicago_pipeline.config import FIELDNAMES, PAGE_SIZE, RAW_EXTRACTED_CSV_PATH
 
 
 def fetch_and_save_csv(**_context):
