@@ -92,12 +92,19 @@ with DAG(
         task_validate_raw >> [task_valid_raw, task_quarantine_raw]
 
     with TaskGroup("transformation", tooltip="Preparation et qualite des donnees") as transformation:
-        with TaskGroup("prepare", tooltip="Nettoyage et enrichissement du dataset"):
+        with TaskGroup("prepare", tooltip="Nettoyage et preparation du dataset principal"):
             task_filter = PythonOperator(
                 task_id="clean_valid_raw",
                 python_callable=transform_filter,
                 doc_md="Nettoie le brut valide, caste les types et supprime les doublons.",
             )
+            task_merge = PythonOperator(
+                task_id="finalize_clean_dataset",
+                python_callable=merge_and_finalize,
+                doc_md="Prepare le dataset final propre a partir du CSV filtre.",
+            )
+
+        with TaskGroup("aggregations", tooltip="Construction des jeux agreges") as aggregations:
             task_agg = PythonOperator(
                 task_id="aggregate_valid_raw",
                 python_callable=transform_agg,
@@ -128,11 +135,6 @@ with DAG(
                 python_callable=transform_agg_yearly,
                 doc_md="Tendance annuelle du nombre de crimes par type.",
             )
-            task_merge = PythonOperator(
-                task_id="finalize_clean_dataset",
-                python_callable=merge_and_finalize,
-                doc_md="Prepare le dataset final propre a partir du CSV filtre.",
-            )
 
         with TaskGroup("quality", tooltip="Validation Soda du dataset prepare"):
             task_validate_processed = PythonOperator(
@@ -158,15 +160,7 @@ with DAG(
                 doc_md="Publie le jeu processed en quarantaine dans la table intermediaire `chicago_crimes_processed_quarantine`.",
             )
 
-        [
-            task_filter,
-            task_agg,
-            task_agg_hourly,
-            task_agg_monthly,
-            task_agg_serious,
-            task_agg_community,
-            task_agg_yearly,
-        ] >> task_merge >> task_validate_processed
+        task_filter >> task_merge >> task_validate_processed
         task_validate_processed >> task_split_processed
         task_split_processed >> [task_valid_processed, task_quarantine_processed]
 
@@ -179,7 +173,7 @@ with DAG(
                 doc_md="Cree ou reinitialise les tables cibles PostgreSQL a partir du script SQL du projet.",
             )
 
-        with TaskGroup("publish", tooltip="Chargement final parallelise"):
+        with TaskGroup("records", tooltip="Chargement des donnees finales valides et en quarantaine"):
             task_load_valid = PythonOperator(
                 task_id="load_valid_records",
                 python_callable=load_valid_data,
@@ -190,6 +184,8 @@ with DAG(
                 python_callable=load_quarantine_data,
                 doc_md="Charge les lignes de `processed_quarantine` dans la table finale de quarantaine.",
             )
+
+        with TaskGroup("aggregations", tooltip="Chargement des tables d agregation"):
             task_load_hourly = PythonOperator(
                 task_id="load_agg_hourly",
                 python_callable=load_agg_hourly,
@@ -216,9 +212,8 @@ with DAG(
                 doc_md="Charge l'agregation annuelle.",
             )
 
+        task_create_tables >> [task_load_valid, task_load_quarantine]
         task_create_tables >> [
-            task_load_valid,
-            task_load_quarantine,
             task_load_hourly,
             task_load_monthly,
             task_load_serious,
@@ -226,8 +221,8 @@ with DAG(
             task_load_yearly,
         ]
 
+    task_valid_raw >> task_filter
     task_valid_raw >> [
-        task_filter,
         task_agg,
         task_agg_hourly,
         task_agg_monthly,
