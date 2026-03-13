@@ -134,10 +134,9 @@ PostgreSQL
         v
 Streamlit Dashboard
   - Overview
-  - Soda Reports
-  - Database Explorer
-  - Quarantine Explorer
-  - History
+  - Quality Monitor
+  - Data Health
+  - Insights
 ```
 
 ## Architecture technique
@@ -284,22 +283,22 @@ Tables intermediaires notables:
 ## App Streamlit
 
 Le dashboard local permet de consulter:
-- les rapports Soda `raw` et `processed`
-- la volumetrie des tables PostgreSQL
-- les tables de quarantaine
-- les apercus de tables en base
-- un historique si des snapshots sont fournis
+- une vue `Overview` avec statuts, ratios, funnel qualite et contexte technique
+- une vue `Quality Monitor` pour lire les contrats Soda `raw` et `processed`
+- une vue `Data Health` pour suivre la table valide et la quarantaine
+- une vue `Insights` pour explorer les tables d'agregation avec des graphes simples
 
 Structure:
-- `streamlit_app.py`: page d'accueil
-- `pages/1_Overview.py`
-- `pages/2_Soda_Reports.py`
-- `pages/3_Database_Explorer.py`
-- `pages/4_Quarantine_Explorer.py`
-- `pages/5_History.py`
+- `streamlit_app.py`: point d'entree et navigation `st.navigation`
+- `pages/0_Overview.py`
+- `pages/1_Quality.py`
+- `pages/2_Data_Health.py`
+- `pages/3_Aggregations.py`
 
 Modules internes:
 - `streamlit_dashboard/config.py`
+- `streamlit_dashboard/charts.py`
+- `streamlit_dashboard/metrics.py`
 - `streamlit_dashboard/services/reports.py`
 - `streamlit_dashboard/services/postgres.py`
 - `streamlit_dashboard/ui.py`
@@ -308,10 +307,16 @@ Fonctionnalites UX:
 - bandeau de sante du pipeline
 - cartes KPI
 - visualisation de perte de volume
-- filtres de quarantaine
-- recherche texte
+- repartition `raw` / `processed` sur la page qualite
+- filtres et apercu de quarantaine dans `Data Health`
 - bouton de rafraichissement
-- telechargement CSV
+- navigation laterale simplifiee
+
+Organisation des pages:
+- `Overview`: contrats Soda, ratios de validite, tables finales, funnel qualite et contexte
+- `Quality Monitor`: comparaison visuelle des controles `raw` et `processed`
+- `Data Health`: suivi conjoint des tables `chicago_crimes` et `chicago_crimes_quarantine`
+- `Insights`: visualisation des tables `agg_hourly`, `agg_monthly`, `agg_serious`, `agg_community`, `agg_yearly`
 
 ## Secrets locaux
 
@@ -374,15 +379,18 @@ Ces fichiers sont ignores par Git.
 │   └── sql/
 │       └── init_tables.sql
 ├── pages/
-│   ├── 1_Overview.py
-│   ├── 2_Soda_Reports.py
-│   ├── 3_Database_Explorer.py
-│   ├── 4_Quarantine_Explorer.py
-│   └── 5_History.py
+│   ├── 0_Overview.py
+│   ├── 1_Quality.py
+│   ├── 2_Data_Health.py
+│   └── 3_Aggregations.py
 ├── streamlit_dashboard/
+│   ├── __init__.py
+│   ├── charts.py
 │   ├── config.py
+│   ├── metrics.py
 │   ├── ui.py
 │   └── services/
+│       ├── __init__.py
 │       ├── postgres.py
 │       └── reports.py
 ├── streamlit_app.py
