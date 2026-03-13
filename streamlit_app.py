@@ -2,7 +2,7 @@ import streamlit as st
 
 
 st.set_page_config(
-    page_title="Chicago Crimes Monitor",
+    page_title="Chicago Crimes Overview",
     page_icon=":satellite_antenna:",
     layout="wide",
 )

@@ -7,7 +7,6 @@ OK = "#2E8B57"
 WARN = "#C97A1A"
 ALERT = "#C44536"
 ACCENT = "#0F766E"
-SURFACE = "#F7F4EC"
 
 
 def _base_chart(data: pd.DataFrame, title: str | None = None) -> alt.Chart:
