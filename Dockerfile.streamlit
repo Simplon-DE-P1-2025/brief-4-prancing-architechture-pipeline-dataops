@@ -6,6 +6,9 @@ COPY requirements-streamlit.txt .
 RUN pip install --no-cache-dir -r requirements-streamlit.txt
 
 COPY streamlit_app.py .
+COPY pages ./pages
+COPY streamlit_dashboard ./streamlit_dashboard
+COPY include ./include
 
 EXPOSE 8501
 
