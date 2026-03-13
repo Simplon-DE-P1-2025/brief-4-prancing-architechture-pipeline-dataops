@@ -46,7 +46,7 @@ def extract_summary_metric(summary_df: pd.DataFrame, metric: str) -> str:
     return str(match.iloc[0])
 
 
-def _extract_summary_metric_float(summary_df: pd.DataFrame, metric: str) -> float | None:
+def extract_summary_metric_float(summary_df: pd.DataFrame, metric: str) -> float | None:
     value = extract_summary_metric(summary_df, metric)
     if value == "-":
         return None
@@ -80,10 +80,10 @@ def get_report_history(report_key: str) -> pd.DataFrame:
             {
                 "snapshot_at": get_report_last_updated(report_key),
                 "report_key": report_key,
-                "total_rows": _extract_summary_metric_float(summary_df, "total_rows"),
-                "valid_rows": _extract_summary_metric_float(summary_df, "valid_rows"),
-                "quarantine_rows": _extract_summary_metric_float(summary_df, "quarantine_rows"),
-                "valid_ratio": _extract_summary_metric_float(summary_df, "valid_ratio"),
+                "total_rows": extract_summary_metric_float(summary_df, "total_rows"),
+                "valid_rows": extract_summary_metric_float(summary_df, "valid_rows"),
+                "quarantine_rows": extract_summary_metric_float(summary_df, "quarantine_rows"),
+                "valid_ratio": extract_summary_metric_float(summary_df, "valid_ratio"),
             }
         ]
     )
@@ -96,9 +96,29 @@ def get_report_status(report_key: str) -> tuple[str, str]:
         return ("info", "Rapport absent")
 
     passed = extract_summary_metric(summary_df, "contract_passed").lower()
-    quarantine_rows = _extract_summary_metric_float(summary_df, "quarantine_rows") or 0
+    quarantine_rows = extract_summary_metric_float(summary_df, "quarantine_rows") or 0
     if passed == "true" and quarantine_rows == 0:
         return ("ok", "Sain")
     if passed == "true":
         return ("warn", "Avec quarantaine")
     return ("warn", "Contrat en echec")
+
+
+def get_report_overview(report_key: str) -> dict[str, Any]:
+    bundle = get_report_bundle(report_key)
+    summary_df = bundle["summary"]
+    status, label = get_report_status(report_key)
+    return {
+        "report_key": report_key,
+        "status": status,
+        "status_label": label,
+        "last_updated": get_report_last_updated(report_key),
+        "total_rows": extract_summary_metric_float(summary_df, "total_rows"),
+        "valid_rows": extract_summary_metric_float(summary_df, "valid_rows"),
+        "quarantine_rows": extract_summary_metric_float(summary_df, "quarantine_rows"),
+        "valid_ratio": extract_summary_metric_float(summary_df, "valid_ratio"),
+        "contract_passed": extract_summary_metric(summary_df, "contract_passed"),
+        "summary": summary_df,
+        "reasons": bundle["reasons"],
+        "markdown": bundle["markdown"],
+    }

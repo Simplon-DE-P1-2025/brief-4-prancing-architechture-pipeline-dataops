@@ -49,7 +49,7 @@ Pipeline ETL unique organise en trois groupes:
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
-    "retries": 1,
+    "retries": 2,
     "retry_delay": timedelta(minutes=5),
 }
 

@@ -85,7 +85,7 @@ astro dev start
 
 Point important:
 - `CHICAGO_API_LIMIT` controle le volume total collecte
-- `PAGE_SIZE=1000` est fixe dans [dag_main.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/dag_main.py) et controle la pagination
+- `PAGE_SIZE=1000` est fixe dans [config.yml](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline/config/config.yml) et controle la pagination
 - pour changer `PAGE_SIZE`, il faut modifier le code puis redemarrer Airflow
 - si tu augmentes fortement la limite, le temps d'execution, les CSV generes et la volumetrie PostgreSQL augmenteront aussi
 
@@ -100,22 +100,30 @@ Airflow / Astro
   - dag_main
   - dag_main_poc
         |
-        +--> Ingestion
+        +--> Extract
         |     - extraction API
         |     - validation Soda raw
         |     - separation valid / quarantine
         |
         +--> Transformation
-        |     - nettoyage
-        |     - cast des types
-        |     - agregations
-        |     - validation Soda processed
-        |     - split processed valid / quarantine
+        |     - prepare
+        |       - nettoyage
+        |       - cast des types
+        |       - dataset principal
+        |     - aggregations
+        |       - jeux agreges pour l'analyse
+        |     - quality
+        |       - validation Soda processed
+        |     - outputs
+        |       - split processed valid / quarantine
         |
         +--> Loading
-              - create_target_tables
-              - load_valid_records
-              - load_quarantine_records
+              - init
+              - records
+                - load_valid_records
+                - load_quarantine_records
+              - aggregations
+                - load_agg_*
         |
         v
 PostgreSQL
@@ -143,6 +151,16 @@ Technologies utilisees:
 - `Streamlit` pour le dashboard local
 - `Docker Compose` pour lancer Streamlit separement d'Astro
 
+Organisation du code Airflow:
+- [dag_main.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/dag_main.py): orchestration Airflow uniquement
+- [config.yml](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline/config/config.yml): constantes fonctionnelles, chemins et parametres du pipeline
+- [config/__init__.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline/config/__init__.py): chargeur Python de la configuration YAML
+- [extraction.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline/extraction.py): extraction API
+- [quality.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline/quality.py): controles Soda, rapports et quarantaine
+- [transformation.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline/transformation.py): nettoyage et agregations
+- [loading.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline/loading.py): chargement PostgreSQL
+- [database.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline/database.py): helpers de connexion et de remplacement de tables
+
 ## DAGs
 
 Le projet contient actuellement deux DAGs:
@@ -153,18 +171,41 @@ Le DAG de reference pour le projet est `dag_main`.
 
 `dag_main_poc` est conserve uniquement comme POC pour tester ou comparer certaines fonctionnalites du DAG. Il ne constitue pas le flux principal documente dans ce README.
 
+Le DAG principal est volontairement leger: il contient surtout la declaration des `TaskGroup`, des `PythonOperator` et des dependances. La logique metier est externalisee dans le package [dags/chicago_pipeline](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline).
+
 Flux principal de `dag_main`:
 1. `fetch_api_raw`
 2. `ensure_postgres_database`
 3. `validate_raw_contract`
 4. `publish_valid_raw` et `publish_quarantine_raw`
-5. `clean_valid_raw` et `aggregate_valid_raw` en parallele
-6. `finalize_clean_dataset`
-7. `validate_processed_contract`
-8. `split_processed_outputs`
-9. `publish_valid_processed` et `publish_quarantine_processed`
-10. `create_target_tables`
-11. `load_valid_records` et `load_quarantine_records`
+5. `transformation.prepare`
+6. `clean_valid_raw`
+7. `finalize_clean_dataset`
+8. `validate_processed_contract`
+9. `split_processed_outputs`
+10. `publish_valid_processed` et `publish_quarantine_processed`
+11. `transformation.aggregations`
+12. `aggregate_valid_raw`, `aggregate_hourly`, `aggregate_monthly`, `aggregate_serious_crimes`, `aggregate_community`, `aggregate_yearly`
+13. `create_target_tables`
+14. `loading.records`
+15. `load_valid_records` et `load_quarantine_records`
+16. `loading.aggregations`
+17. `load_agg_hourly`, `load_agg_monthly`, `load_agg_serious`, `load_agg_community`, `load_agg_yearly`
+
+TaskGroups visibles dans l'UI Airflow:
+- `extract`
+  - `source`
+  - `quality`
+  - `outputs`
+- `transformation`
+  - `prepare`
+  - `aggregations`
+  - `quality`
+  - `outputs`
+- `loading`
+  - `init`
+  - `records`
+  - `aggregations`
 
 Schema du flux:
 
@@ -189,7 +230,7 @@ Role:
 
 Le pipeline applique notamment:
 - lecture du brut extrait depuis l'API Socrata
-- pagination `limit / offset` dans `dag_main`
+- pagination `limit / offset` dans [extraction.py](/home/dido/simplon_project/brief-4-prancing-architechture-pipeline-dataops/dags/chicago_pipeline/extraction.py)
 - typage des colonnes numeriques et booleennes
 - conversion de `date` et `updated_on` en `datetime`
 - normalisation des noms de colonnes
@@ -307,6 +348,16 @@ Ces fichiers sont ignores par Git.
 ```text
 .
 ├── dags/
+│   ├── chicago_pipeline/
+│   │   ├── __init__.py
+│   │   ├── config/
+│   │   │   ├── __init__.py
+│   │   │   └── config.yml
+│   │   ├── database.py
+│   │   ├── extraction.py
+│   │   ├── loading.py
+│   │   ├── quality.py
+│   │   └── transformation.py
 │   ├── dag_main.py
 │   └── dag_main_poc.py
 ├── include/
